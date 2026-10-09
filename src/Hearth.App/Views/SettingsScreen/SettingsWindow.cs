@@ -65,6 +65,7 @@ internal sealed partial class SettingsWindow : Window
         AddPage("tabletparts", 0xE771, "Tablet features", BuildTabletPartsPage);
         AddPage("home", 0xE80F, "Home screen", BuildHomePage);
         AddPage("start", 0xF0E2, "Start", BuildStartPage);
+        AddPage("bar", 0xE700, "Bar", BuildBarPage);
         AddPage("startup", 0xE7E8, "Startup", BuildStartupPage);
         AddPage("about", 0xE946, "About", BuildAboutPage);
 
@@ -164,7 +165,35 @@ internal sealed partial class SettingsWindow : Window
             ToggleRow("Show labels", null, s.ShowLabels, v => { s.ShowLabels = v; Apply(false); }),
             ToggleRow("Uniform backgrounds", "Give every icon a generated background, even ones that already fill the shape.",
                 s.UniformBackgrounds, v => { s.UniformBackgrounds = v; Apply(true); }),
-            ToggleRow("Icon shadows", null, s.BakeShadows, v => { s.BakeShadows = v; Apply(true); })));
+            ToggleRow("Icon shadows", null, s.BakeShadows, v => { s.BakeShadows = v; Apply(true); }),
+            ToggleRow("Sharpen small icons",
+                "Some programs ship nothing bigger than a 32 px icon. Those are enlarged along their own edges " +
+                "rather than blurred up. It cannot invent detail that was never there.",
+                s.SharpenSmallIcons, v => { s.SharpenSmallIcons = v; Apply(true); }),
+            Row("Icon quality",
+                "Icons are pulled from Windows at 256 px and re-rendered whenever the shape, size or scale changes, " +
+                "and a newly installed app is rendered the first time it is shown. Rebuild them if one looks wrong or " +
+                "was cached before you changed something.",
+                Button("Rebuild every icon", () =>
+                {
+                    App.Icons.ClearDiskCache();
+                    DesktopHost.Current?.Surface?.ApplySettingsChange(reRenderIcons: true);
+                    StartMenuController.Current?.InvalidateWindow();
+                    Log.Write("settings: icon cache cleared; every icon will be rendered again");
+                }))));
+
+        page.Children.Add(Section("Theme"));
+        page.Children.Add(Card(
+            ChoiceRow("Hearth's own light and dark",
+                "Auto follows \"Choose your default Windows mode\", and changes with it while Hearth is running.",
+                new[] { (HearthTheme.Auto, "Auto"), (HearthTheme.Light, "Light"), (HearthTheme.Dark, "Dark") },
+                s.Theme,
+                v =>
+                {
+                    s.Theme = v;
+                    s.Save();
+                    Hosting.HearthTheming.Reapply();
+                })));
 
         page.Children.Add(Section("Layout and behaviour"));
         page.Children.Add(Card(
@@ -216,7 +245,40 @@ internal sealed partial class SettingsWindow : Window
                     s.Save();
                     StartMenuController.Current?.InvalidateWindow();
                 }, wrap: true),
-            Row("Web search address", "{0} is replaced by what you typed.", search),
+            Row("Web search address", "{0} is replaced by what you typed.", search)));
+
+        page.Children.Add(Section("Where it opens"));
+        page.Children.Add(Card(
+            ChoiceRow("Position", "Above the taskbar is where Windows' own Start sits. Every other choice detaches the menu from the taskbar and puts it in the work area.",
+                new[]
+                {
+                    (StartPlacement.AboveTaskbar, "Above the taskbar"),
+                    (StartPlacement.BottomLeft, "Bottom left"),
+                    (StartPlacement.BottomCentre, "Bottom centre"),
+                    (StartPlacement.BottomRight, "Bottom right"),
+                    (StartPlacement.LeftCentre, "Left"),
+                    (StartPlacement.Centre, "Middle"),
+                    (StartPlacement.CentreLarge, "Middle, larger"),
+                    (StartPlacement.RightCentre, "Right"),
+                    (StartPlacement.TopLeft, "Top left"),
+                    (StartPlacement.TopCentre, "Top centre"),
+                    (StartPlacement.TopRight, "Top right"),
+                }, s.StartPlacement,
+                v => { s.StartPlacement = v; s.Save(); StartMenuController.Current?.InvalidateWindow(); }, wrap: true),
+            ChoiceRow("Density", "Compact gives the pages, apps and widgets about a tenth more height by tightening the search box, tabs and footer. Auto is compact in the middle of the screen and standard everywhere else.",
+                new[]
+                {
+                    (StartDensity.Auto, "Auto"), (StartDensity.Standard, "Standard"), (StartDensity.Compact, "Compact"),
+                }, s.StartDensity,
+                v => { s.StartDensity = v; s.Save(); StartMenuController.Current?.InvalidateWindow(); }),
+            SliderRow("Size", "The menu keeps its shape and is scaled as a whole; a display with no room for it shrinks it anyway.",
+                0.7, 1.6, 0.05, s.StartScale, v => $"{v * 100:F0}%",
+                v => { s.StartScale = v; s.Save(); }),
+            SliderRow("Gap from the edges", null, 0, 80, 4, s.StartMargin, v => $"{v:F0}",
+                v => { s.StartMargin = v; s.Save(); })));
+
+        page.Children.Add(Section("Tablet mode"));
+        page.Children.Add(Card(
             ToggleRow("Fill the screen in tablet mode", null, Tablet.TabletMode.Current?.Settings.FullScreenStart ?? true, v =>
             {
                 if (Tablet.TabletMode.Current is not { } tablet) return;

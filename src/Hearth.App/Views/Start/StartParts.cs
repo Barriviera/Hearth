@@ -9,6 +9,7 @@ using System.Windows.Media;
 using Hearth.App.Controls;
 using Hearth.Core.Diagnostics;
 using Hearth.Core.Icons;
+using Hearth.Core.Settings;
 using Hearth.Core.Shell;
 using Hearth.Core.Threading;
 
@@ -34,13 +35,27 @@ internal static class StartStyle
 
     public static bool IsLight { get; private set; }
 
-    /// <summary>Reads the Windows theme and accent. Call before building the window.</summary>
+    /// <summary>
+    /// Settles the palette. Call before building anything that reads it.
+    ///
+    /// Hearth's own setting wins over Windows'; Auto is the one that asks
+    /// Windows, so a machine set to dark gets a dark Hearth without the user
+    /// having to say so twice.
+    /// </summary>
     public static void UseSystemTheme()
     {
-        IsLight = SystemTheme.SystemUsesLight;
+        IsLight = Resolve();
         _palette = Build(IsLight);
         Cache.Clear();
     }
+
+    /// <summary>What the theme would be right now, without changing anything.</summary>
+    public static bool Resolve() => App.Settings.Theme switch
+    {
+        HearthTheme.Light => true,
+        HearthTheme.Dark => false,
+        _ => SystemTheme.SystemUsesLight,
+    };
 
     private static Palette Build(bool light)
     {
@@ -303,10 +318,32 @@ internal static class StartStyle
     };
 
     /// <summary>Icon options for this window's DPI, at a given DIP size.</summary>
+    /// <summary>
+    /// How much the menu as a whole is being scaled by, on top of the display.
+    ///
+    /// The Start menu is laid out at a fixed design size and scaled bodily to
+    /// fit — down on a small screen, and up by a quarter for the larger centred
+    /// placement. That transform applies to the finished bitmaps too, so an
+    /// icon rasterised at 48 px was being drawn at 60, which is exactly the
+    /// "grainy" the user saw. Rasterising at the size it will really be drawn
+    /// costs nothing: the artwork is extracted at 256 px either way.
+    /// </summary>
+    public static double RenderScale { get; private set; } = 1.0;
+
+    /// <summary>Returns true when the change is worth re-rendering icons for.</summary>
+    public static bool SetRenderScale(double scale)
+    {
+        if (scale <= 0 || double.IsNaN(scale)) scale = 1;
+        if (Math.Abs(scale - RenderScale) < 0.02) return false;
+        RenderScale = scale;
+        return true;
+    }
+
     public static IconRenderOptions IconOptions(Visual visual, double size)
     {
         var scale = VisualTreeHelper.GetDpi(visual).PixelsPerDip;
-        return App.Settings.ToRenderOptions(scale <= 0 ? 1 : scale) with { Size = size };
+        if (scale <= 0) scale = 1;
+        return App.Settings.ToRenderOptions(scale * RenderScale) with { Size = size };
     }
 }
 
@@ -418,12 +455,12 @@ internal sealed class TabPill : PressableBorder
 
     public string Key { get; }
 
-    public TabPill(string key, string text) : base(radius: 14)
+    public TabPill(string key, string text, StartMetrics metrics) : base(radius: metrics.TabRadius)
     {
         Key = key;
-        Padding = new Thickness(14, 5, 14, 6);
-        Margin = new Thickness(0, 0, 6, 0);
-        _label = StartStyle.Label(text, 13, weight: FontWeights.SemiBold);
+        Padding = metrics.TabPadding;
+        Margin = new Thickness(0, 0, metrics.TabGap, 0);
+        _label = StartStyle.Label(text, metrics.TabFont, weight: FontWeights.SemiBold);
         Child = _label;
     }
 

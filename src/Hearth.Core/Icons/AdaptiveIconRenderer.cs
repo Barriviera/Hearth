@@ -50,6 +50,12 @@ public sealed record IconRenderOptions
 
     /// <summary>Tunes generated backgrounds toward the surrounding UI.</summary>
     public bool DarkTheme { get; init; } = true;
+
+    /// <summary>
+    /// Enlarge artwork that is smaller than the tile, edge-directed, before
+    /// drawing it. See <see cref="IconUpscaler"/>.
+    /// </summary>
+    public bool Sharpen { get; init; } = true;
 }
 
 /// <summary>

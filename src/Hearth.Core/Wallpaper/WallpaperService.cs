@@ -93,6 +93,40 @@ public sealed class WallpaperService
         return new MonitorInfo("fallback", new Rect(x, y, w, h), null);
     }
 
+    /// <summary>
+    /// A short description of everything Hearth would draw: which displays,
+    /// which picture on each, its fit and the fallback colour.
+    ///
+    /// The watcher fires on writes that often change nothing Hearth can see
+    /// (a slideshow rewriting the same path, the theme engine touching its
+    /// cache), so the signature is what decides whether a repaint is worth
+    /// doing. The file's own timestamp and length are part of it because the
+    /// path stays the same when a picture is edited in place, and because
+    /// Windows rewrites its transcoded copy under a fixed name.
+    /// </summary>
+    public string Signature()
+    {
+        var parts = new List<string> { GetPosition().ToString(), GetBackgroundColor().ToString() };
+        foreach (var monitor in GetMonitors())
+        {
+            var stamp = "-";
+            if (monitor.WallpaperPath is not null)
+            {
+                try
+                {
+                    var file = new FileInfo(monitor.WallpaperPath);
+                    stamp = $"{file.LastWriteTimeUtc.Ticks}:{file.Length}";
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    stamp = "?";
+                }
+            }
+            parts.Add($"{monitor.DeviceId}|{monitor.Bounds}|{monitor.WallpaperPath ?? "-"}|{stamp}");
+        }
+        return string.Join(((char)10).ToString(), parts);
+    }
+
     public DesktopWallpaperPosition GetPosition()
     {
         IDesktopWallpaper? wallpaper = null;

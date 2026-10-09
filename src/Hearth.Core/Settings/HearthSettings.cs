@@ -18,6 +18,59 @@ public enum HomeStyle
     Ios,
 }
 
+/// <summary>
+/// Hearth's own light/dark choice. Auto follows "Choose your default Windows
+/// mode", which is what Start and the taskbar follow.
+/// </summary>
+public enum HearthTheme
+{
+    Auto,
+    Light,
+    Dark,
+}
+
+/// <summary>
+/// Where Hearth's Start menu opens. <see cref="AboveTaskbar"/> follows the
+/// taskbar the way Windows' own Start does; every other choice detaches the
+/// menu from it and pins it to a part of the display's work area instead.
+/// </summary>
+public enum StartPlacement
+{
+    /// <summary>
+    /// Follows whatever bar is there: Hearth's own if it is running, otherwise
+    /// the Windows taskbar. The ring has no edge to stand on, so it opens in
+    /// the middle instead.
+    /// </summary>
+    Auto,
+
+    /// <summary>Centred over the taskbar's edge, a small gap clear of it.</summary>
+    AboveTaskbar,
+    BottomLeft,
+    BottomCentre,
+    BottomRight,
+    LeftCentre,
+    /// <summary>The middle of the display, at the ordinary size.</summary>
+    Centre,
+    /// <summary>The middle of the display, a quarter larger.</summary>
+    CentreLarge,
+    RightCentre,
+    TopLeft,
+    TopCentre,
+    TopRight,
+}
+
+/// <summary>
+/// How tightly the Start menu's own furniture is packed. Compact gives the
+/// views inside it about a tenth more height for the same window.
+/// </summary>
+public enum StartDensity
+{
+    /// <summary>Compact in the middle of the screen, standard everywhere else.</summary>
+    Auto,
+    Standard,
+    Compact,
+}
+
 public sealed class HearthSettings
 {
     // ---- Look -----------------------------------------------------------
@@ -36,6 +89,9 @@ public sealed class HearthSettings
 
     public bool BakeShadows { get; set; } = true;
 
+    /// <summary>Enlarge icons that ship nothing bigger than 32 or 48 px, rather than letting them blur.</summary>
+    public bool SharpenSmallIcons { get; set; } = true;
+
     /// <summary>
     /// Force a generated background even on icons that already fill a square.
     /// Maximum uniformity, at the cost of shrinking artwork that did not need
@@ -44,6 +100,9 @@ public sealed class HearthSettings
     public bool UniformBackgrounds { get; set; }
 
     public bool DarkTheme { get; set; } = true;
+
+    /// <summary>Light or dark for Hearth's own surfaces. Auto follows Windows.</summary>
+    public HearthTheme Theme { get; set; } = HearthTheme.Auto;
 
     /// <summary>0 = wallpaper untouched, 1 = solid scrim. Lifts icon legibility.</summary>
     public double WallpaperDim { get; set; } = 0.15;
@@ -70,6 +129,22 @@ public sealed class HearthSettings
     public bool ReplaceStartMenu { get; set; } = true;
 
     public StartBackdrop StartBackdrop { get; set; } = StartBackdrop.Blur;
+
+    /// <summary>Where the menu opens. Anything but AboveTaskbar detaches it from the taskbar.</summary>
+    public StartPlacement StartPlacement { get; set; } = StartPlacement.Auto;
+
+    /// <summary>
+    /// Size multiplier on top of the placement's own. The menu keeps its 4:3
+    /// shape and is scaled as a whole, so it never reflows into a different
+    /// layout; it is capped by whatever room the display has.
+    /// </summary>
+    public double StartScale { get; set; } = 1.0;
+
+    /// <summary>Gap between the menu and the edges of the work area, in DIPs.</summary>
+    public double StartMargin { get; set; } = 12;
+
+    /// <summary>How much room the search box, tabs and footer take.</summary>
+    public StartDensity StartDensity { get; set; } = StartDensity.Auto;
 
     /// <summary>Web search for Start's search box; the query replaces {0}.</summary>
     public string WebSearchUrl { get; set; } = "https://www.google.com/search?q={0}";
@@ -131,6 +206,7 @@ public sealed class HearthSettings
         Size = IconSize,
         Scale = scale,
         BakeShadow = BakeShadows,
+        Sharpen = SharpenSmallIcons,
         ForceBackground = UniformBackgrounds,
         DarkTheme = DarkTheme,
     };

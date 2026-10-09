@@ -97,7 +97,21 @@ public sealed class IconService : IDisposable
             }
 
             var rendered = await RenderOnDedicatedThreadAsync(item, options).ConfigureAwait(false);
-            if (rendered is null) return null;
+            if (rendered is null)
+            {
+                // The shell's image factory does fail transiently, and it does
+                // it most when every icon is being extracted at once — which is
+                // exactly what "rebuild every icon" asks for, and why a few
+                // tiles came back blank after one. A failure is not cached, so
+                // one more try a moment later is all it takes.
+                await Task.Delay(180).ConfigureAwait(false);
+                rendered = await RenderOnDedicatedThreadAsync(item, options).ConfigureAwait(false);
+            }
+            if (rendered is null)
+            {
+                Debug.WriteLine($"[Hearth] no icon for '{item.DisplayName}' after a retry");
+                return null;
+            }
 
             _memoryCache[key] = rendered;
             _ = Task.Run(() => SavePng(rendered, diskPath));
@@ -125,11 +139,25 @@ public sealed class IconService : IDisposable
                 ? $@"shell:AppsFolder\{item.Target}"
                 : item.Target ?? item.Id;
 
-            var source = item.IconOverridePath is { Length: > 0 } overridePath && File.Exists(overridePath)
-                ? LoadRawFromFile(overridePath)
+            // Steam's own library artwork, composed here because this is the
+            // one thread in the process that may touch WPF imaging.
+            var steam = item.SteamAppId is { Length: > 0 } appId ? SteamArtwork.IconFor(appId) : null;
+            var picked = item.IconOverridePath is { Length: > 0 } chosen && File.Exists(chosen) ? chosen : steam;
+
+            var source = picked is not null
+                ? LoadRawFromFile(picked)
                 : IconExtractor.Extract(parsingName);
 
             if (source is null) return (BitmapSource?)null;
+
+            // Artwork smaller than the tile is enlarged before anything is
+            // measured from it, so the analysis and the mask both work on the
+            // pixels that will actually be drawn.
+            if (options.Sharpen)
+            {
+                var wanted = (int)Math.Ceiling(options.Size * options.Scale);
+                source = IconUpscaler.Enlarge(source, wanted);
+            }
 
             var analysis = IconAnalysis.Analyse(source);
             return AdaptiveIconRenderer.Render(source, analysis, options);
@@ -210,7 +238,8 @@ public sealed class IconService : IDisposable
         var fingerprint = string.Join('|',
             CacheVersion,
             item.Id,
-            item.IconOverridePath ?? string.Empty,
+            item.IconOverridePath ?? item.SteamAppId ?? string.Empty,
+            options.Sharpen ? "s" : "-",
             options.Shape,
             options.Size.ToString("F0"),
             options.Scale.ToString("F2"),
@@ -230,6 +259,9 @@ public sealed class IconService : IDisposable
     public void ClearDiskCache()
     {
         _memoryCache.Clear();
+        // Requests already under way would otherwise be handed back from
+        // _inFlight and re-save the very entries being deleted.
+        _inFlight.Clear();
         try
         {
             foreach (var file in Directory.EnumerateFiles(_diskCacheDirectory, "*.png"))

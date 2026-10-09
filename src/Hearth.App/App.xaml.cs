@@ -24,6 +24,7 @@ public partial class App : Application
 
     private StartMenuController? _start;
     private TabletMode? _tablet;
+    private Bar.BarService? _bar;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -88,6 +89,10 @@ public partial class App : Application
             return;
         }
 
+        // Settled before the bar or any dialog reads it; the Start menu used to
+        // be the only thing that set it, and only when it was first opened.
+        HearthTheming.Start();
+
         _start = new StartMenuController(Dispatcher);
         _start.ListenForRequests();
 
@@ -103,6 +108,20 @@ public partial class App : Application
         }
 
         WidgetServices.Start();
+
+        try
+        {
+            // Off unless the user asked for it; the constructor starts nothing
+            // and touches no part of the shell while the setting is off.
+            _bar = new Bar.BarService(Dispatcher);
+        }
+        catch (Exception ex)
+        {
+            // The bar is an extra, like tablet mode: the desktop comes up
+            // without it, and the Windows taskbar stays where it was.
+            Log.Error("bar start", ex);
+            Bar.ShellTaskbar.Restore();
+        }
 
         // "Hearth.exe --tablet on" or "--settings" as the first start still does what it says.
         if (StartMenuController.ParseRequest(e.Args) is { } request &&
@@ -145,7 +164,11 @@ public partial class App : Application
     private void TearDown()
     {
         WidgetServices.Stop();
-        // Tablet mode first: it puts the taskbar back and closes its bars.
+        HearthTheming.Stop();
+        // The bar and tablet mode first: between them they own everything
+        // Hearth changed about the shell, and both put it back.
+        try { _bar?.Dispose(); } catch (Exception ex) { Debug.WriteLine(ex); }
+        _bar = null;
         try { _tablet?.Dispose(); } catch (Exception ex) { Debug.WriteLine(ex); }
         _tablet = null;
         try { _start?.Dispose(); } catch (Exception ex) { Debug.WriteLine(ex); }

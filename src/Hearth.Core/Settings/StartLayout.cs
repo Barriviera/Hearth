@@ -28,9 +28,72 @@ public enum StartBackdrop
 /// </summary>
 public sealed class StartLayout
 {
-    /// <summary>Every page is this many cells. Sized so an icon and its label fit a cell comfortably.</summary>
-    public const int Columns = 7;
-    public const int Rows = 4;
+    /// <summary>
+    /// How many cells a page has.
+    ///
+    /// This is what Compact density buys on the Pages view: the card is the
+    /// same size, the cells are smaller, and more fits on a page. Standard
+    /// stays at the 7x4 every saved layout was built against.
+    ///
+    /// It is settable rather than constant because one process shows one Start
+    /// menu at one density; <see cref="UseGrid"/> is called before the window
+    /// is built and re-places anything the new grid no longer holds.
+    /// </summary>
+    public static int Columns { get; private set; } = StandardGrid.Columns;
+
+    public static int Rows { get; private set; } = StandardGrid.Rows;
+
+    public static readonly (int Columns, int Rows) StandardGrid = (7, 4);
+
+    /// <summary>
+    /// Compact: one more column, same rows.
+    ///
+    /// The width is where the compact chrome actually gives something back, so
+    /// that is where the extra cell goes. An extra row as well was tried and
+    /// was worse: the cells lost a quarter of their height, which took the
+    /// icons down to about 28 px and clipped every two-line label.
+    /// </summary>
+    public static readonly (int Columns, int Rows) CompactGrid = (8, 4);
+
+    /// <summary>
+    /// Changes the grid and puts back anything that fell off it. Returns true
+    /// when something moved, so the caller knows to save.
+    ///
+    /// Growing the grid never moves anything — every old cell is still a cell.
+    /// Shrinking it can, so an item hanging over the new edge is lifted and
+    /// dropped into the first free run of its own size, its own page first.
+    /// </summary>
+    public bool UseGrid(int columns, int rows)
+    {
+        if (columns == Columns && rows == Rows) return false;
+        Columns = columns;
+        Rows = rows;
+
+        var moved = false;
+        var pages = Pages;
+        if (pages is null) return false;
+
+        for (var index = 0; index < pages.Count; index++)
+        {
+            var page = pages[index];
+            page.Columns = Columns;
+            page.Rows = Rows;
+
+            var strays = page.Placements
+                .Where(p => p.Column + p.ColumnSpan > Columns || p.Row + p.RowSpan > Rows)
+                .ToList();
+            if (strays.Count == 0) continue;
+
+            foreach (var stray in strays) page.Placements.Remove(stray);
+            moved = true;
+
+            // Removed first, then placed: a stray can otherwise be given the
+            // cell another stray is still nominally sitting in.
+            foreach (var stray in strays)
+                Place(stray.ItemId, stray.ColumnSpan, stray.RowSpan, fromPage: index);
+        }
+        return moved;
+    }
 
     /// <summary>
     /// Pages in order. Null until the first page set is made (copied from the

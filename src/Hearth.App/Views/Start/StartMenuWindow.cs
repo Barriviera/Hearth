@@ -35,6 +35,11 @@ internal sealed partial class StartMenuWindow : Window
     public const string WidgetsTab = "widgets";
 
     private readonly StartLayout _layout;
+    private readonly StartMetrics _metrics;
+
+    /// <summary>The density this window was built for; the controller rebuilds it when the setting changes.</summary>
+    public StartDensity Density { get; }
+
     private readonly Grid _root;
     private readonly TextBox _search;
     private readonly TextBlock _searchHint;
@@ -49,6 +54,9 @@ internal sealed partial class StartMenuWindow : Window
     private FrameworkElement _tabStrip = null!;
 
     private Dictionary<string, LauncherItem> _apps = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The list _apps was built from, so an unchanged list is not rebuilt.</summary>
+    private IReadOnlyList<LauncherItem>? _appsSource;
     private string _activeTab = PagesTab;
     private Grid _foreground = null!;
     private bool _allowClose;
@@ -60,6 +68,13 @@ internal sealed partial class StartMenuWindow : Window
     public StartMenuWindow(StartLayout layout)
     {
         _layout = layout;
+        Density = StartMetrics.Effective(App.Settings);
+        _metrics = StartMetrics.For(Density);
+
+        // The grid is part of the density: Compact's pages hold more. Anything
+        // the new grid cannot hold is re-placed, so the change is saved.
+        var (columns, rows) = StartMetrics.GridFor(Density);
+        if (layout.UseGrid(columns, rows)) SaveLayout();
 
         Title = "Start — Hearth";
         WindowStyle = WindowStyle.None;
@@ -93,26 +108,26 @@ internal sealed partial class StartMenuWindow : Window
             Foreground = StartStyle.Text,
             CaretBrush = StartStyle.Text,
             SelectionBrush = StartStyle.Accent,
-            FontSize = 14,
-            Padding = new Thickness(40, 9, 12, 9),
+            FontSize = _metrics.SearchFont,
+            Padding = _metrics.SearchPadding,
         };
         _search.TextChanged += (_, _) => OnSearchChanged();
         _search.PreviewKeyDown += OnSearchKey;
 
-        _searchHint = StartStyle.Label("Search apps, settings and files", 14, StartStyle.Faint);
+        _searchHint = StartStyle.Label("Search apps, settings and files", _metrics.SearchFont, StartStyle.Faint);
         _searchHint.IsHitTestVisible = false;
-        _searchHint.Margin = new Thickness(43, 0, 0, 0);
+        _searchHint.Margin = new Thickness(_metrics.HintLeft, 0, 0, 0);
 
-        var searchGlyph = StartStyle.GlyphText(StartStyle.Search, 14, StartStyle.Muted);
+        var searchGlyph = StartStyle.GlyphText(StartStyle.Search, _metrics.SearchFont, StartStyle.Muted);
         searchGlyph.HorizontalAlignment = HorizontalAlignment.Left;
-        searchGlyph.Margin = new Thickness(15, 0, 0, 0);
+        searchGlyph.Margin = new Thickness(_metrics.SearchGlyphLeft, 0, 0, 0);
         searchGlyph.IsHitTestVisible = false;
 
-        var searchBox = new Grid { Margin = new Thickness(24, 22, 24, 0), Children = { _search, searchGlyph, _searchHint } };
+        var searchBox = new Grid { Margin = _metrics.SearchMargin, Children = { _search, searchGlyph, _searchHint } };
         _searchBox = searchBox;
 
         // ---- tabs -------------------------------------------------------
-        var tabStrip = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 14, 24, 8) };
+        var tabStrip = new StackPanel { Orientation = Orientation.Horizontal, Margin = _metrics.TabsMargin };
         _tabStrip = tabStrip;
         foreach (var (key, text) in new[]
                  {
@@ -120,14 +135,14 @@ internal sealed partial class StartMenuWindow : Window
                      (CategoriesTab, "Categories"), (WidgetsTab, "Widgets"),
                  })
         {
-            var pill = new TabPill(key, text);
+            var pill = new TabPill(key, text, _metrics);
             pill.Clicked += _ => ShowTab(key);
             _tabs[key] = pill;
             tabStrip.Children.Add(pill);
         }
 
         // ---- content ----------------------------------------------------
-        _content = new Grid { Margin = new Thickness(24, 4, 24, 8), ClipToBounds = true };
+        _content = new Grid { Margin = _metrics.ContentMargin, ClipToBounds = true };
         _views[PagesTab] = BuildPagesView();
         _views[AllAppsTab] = BuildAllAppsView();
         _views[CategoriesTab] = BuildCategoriesView();
@@ -195,6 +210,15 @@ internal sealed partial class StartMenuWindow : Window
         App.Badges.Changed += () => Dispatcher.InvokeAsync(RefreshBadges);
         App.Apps.Changed += () => { if (IsVisible) RefreshApps(); };
 
+        // The lists work out their own column count from the room they have,
+        // so a change of room (full screen, a different placement or scale)
+        // has to rebuild them.
+        _content.SizeChanged += (_, e) =>
+        {
+            if (Math.Abs(e.PreviousSize.Width - e.NewSize.Width) < 1) return;
+            OnContentWidthChanged();
+        };
+
         ShowTab(PagesTab);
     }
 
@@ -235,7 +259,8 @@ internal sealed partial class StartMenuWindow : Window
         // Full screen (tablet mode) has no taskbar to hold up.
         HoldTaskbar(hwnd, _fullScreen || Tablet.TaskbarControl.IsHiddenByUs ? IntPtr.Zero : placement?.Taskbar ?? IntPtr.Zero);
 
-        if (!IsVisible) Show();
+        var wasVisible = IsVisible;
+        if (!wasVisible) await PresentAsync(hwnd, placement).ConfigureAwait(true);
         Mark("show");
         StartTrigger.ClaimForegroundRight();
         Activate();
@@ -272,15 +297,19 @@ internal sealed partial class StartMenuWindow : Window
         }
 
         _search.Focus();
-        AnimateOpen();
+        if (wasVisible) AnimateOpen();
         LoadAccountPicture();
         Mark("done");
         Log.Write($"start menu: shown, taskbar held={_heldTaskbar != IntPtr.Zero}, active={IsActive}; ms: {string.Join(", ", marks)}");
         _ = Dispatcher.BeginInvoke(() => Log.Write($"start menu: first frame idle at {clock.ElapsedMilliseconds} ms"),
             System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
+        // Compared by identity, not by count: _apps is keyed by id, so two
+        // entries sharing one made the counts differ for ever and rebuilt every
+        // view on every open. A list that really changed arrives through
+        // InstalledApps.Changed instead.
         var apps = await App.Apps.GetAsync().ConfigureAwait(true);
-        if (apps.Count != _apps.Count || _apps.Count == 0) RefreshApps(apps);
+        if (!ReferenceEquals(apps, _appsSource)) RefreshApps(apps);
         if (_activeTab == WidgetsTab) BuildWidgets();
     }
 
@@ -304,6 +333,16 @@ internal sealed partial class StartMenuWindow : Window
         _root.UpdateLayout();
         Hide();
         ShowActivated = true;
+
+        // The backdrop's own path is warmed too: the first capture pays for
+        // GDI's screen DC and for WPF's software render target, which together
+        // cost about 100 ms and would otherwise land on the first real open.
+        // A one-pixel area is enough to walk all of it.
+        _ = StartBackdropCapture.Build(
+            StartBackdropCapture.Capture(new Int32Rect(0, 0, 8, 8), 4) ??
+            System.Windows.Media.Imaging.BitmapSource.Create(1, 1, 96, 96,
+                System.Windows.Media.PixelFormats.Bgra32, null, new byte[4], 4),
+            0, System.Windows.Media.Brushes.Transparent);
     }
 
     public void HideMenu([System.Runtime.CompilerServices.CallerMemberName] string caller = "") => HideMenuFor(null, caller);
@@ -342,6 +381,9 @@ internal sealed partial class StartMenuWindow : Window
 
         HideMenuFor($"pressed outside at {x},{y}", "");
     }
+
+    /// <summary>Whether this tab is the one on show, so a Start button knows a second click means close.</summary>
+    public bool IsShowing(string tab) => _activeTab == tab;
 
     public void CloseForExit()
     {
@@ -395,6 +437,7 @@ internal sealed partial class StartMenuWindow : Window
         _foreground.Width = widthDips / ui;
         _foreground.Height = heightDips / ui;
         _foreground.LayoutTransform = new ScaleTransform(ui, ui);
+        if (StartStyle.SetRenderScale(ui)) RerenderIcons();
         _foreground.HorizontalAlignment = HorizontalAlignment.Center;
         _foreground.VerticalAlignment = VerticalAlignment.Center;
         _searchBox.MaxWidth = 760;
@@ -406,6 +449,19 @@ internal sealed partial class StartMenuWindow : Window
         SetWindowPos(hwnd, IntPtr.Zero, work.Left, work.Top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
         return new Placement(new Int32Rect(work.Left, work.Top, width, height), scale, IntPtr.Zero, FullScreen: true);
     }
+
+    /// <summary>
+    /// Rebuilds every tile so its icon is fetched again at the new scale.
+    /// Queued rather than run here, because this is called from the middle of
+    /// placing the window, before it has been shown.
+    /// </summary>
+    private void RerenderIcons() => Dispatcher.BeginInvoke(() =>
+    {
+        if (_apps.Count == 0) return;
+        RebuildPages();
+        RebuildAllApps();
+        RebuildCategories();
+    }, System.Windows.Threading.DispatcherPriority.Background);
 
     /// <summary>Pages were built for the other presentation; lay out and build them again.</summary>
     private void RelayoutPagesNow()
@@ -464,35 +520,161 @@ internal sealed partial class StartMenuWindow : Window
 
         var screen = info.rcMonitor;
         var work = info.rcWork;
+        var margin = (int)Math.Round(Math.Clamp(App.Settings.StartMargin, 0, 200) * scale);
+        var wanted = Math.Clamp(App.Settings.StartScale, 0.6, 2.0);
+        var placement = ResolvePlacement(monitor);
 
-        var taskbar = TaskbarOn(monitor);
+        if (placement != StartPlacement.AboveTaskbar)
+            return PlaceDetached(hwnd, work, scale, wanted, margin, placement);
+
+        // Hearth's own bar comes first. It is a registered app bar, so the work
+        // area already excludes its strip; all this decides is which end of
+        // that area the menu stands on. The Windows taskbar is not consulted
+        // at all in that case — with the bar running it is usually the one
+        // Hearth has taken off the screen, and standing on a bar nobody can
+        // see put the menu against the wrong edge entirely.
+        var service = Bar.BarService.Current is { IsRunning: true } running ? running : null;
+        var hearthEdge = service?.BarEdgeFor(monitor);
+        var shellHidden = Bar.ShellTaskbar.IsHiddenByUs || Tablet.TaskbarControl.IsHiddenByUs;
+
+        var taskbar = IntPtr.Zero;
         var barHeight = 0;
         var barAtTop = false;
-        if (taskbar != IntPtr.Zero && GetWindowRect(taskbar, out var bar))
+        var barVertical = false;
+
+        if (hearthEdge is { } edge)
         {
-            barHeight = bar.Bottom - bar.Top;
-            barAtTop = bar.Top <= screen.Top + 1 && bar.Bottom < screen.Bottom - barHeight;
+            barAtTop = edge == ScreenEdge.Top;
+            barVertical = edge is ScreenEdge.Left or ScreenEdge.Right;
+        }
+        else if (!shellHidden)
+        {
+            taskbar = TaskbarOn(monitor);
+            if (taskbar != IntPtr.Zero && GetWindowRect(taskbar, out var bar))
+            {
+                barHeight = bar.Bottom - bar.Top;
+                barAtTop = bar.Top <= screen.Top + 1 && bar.Bottom < screen.Bottom - barHeight;
+            }
         }
 
         var top = barAtTop ? Math.Max(work.Top, screen.Top + barHeight) : work.Top;
         var bottom = barAtTop ? work.Bottom : Math.Min(work.Bottom, screen.Bottom - barHeight);
         var areaWidth = work.Right - work.Left;
         var areaHeight = bottom - top;
-        var gap = (int)Math.Round(12 * scale);
 
         // 4:3, at design size if it fits, with room for the gaps.
-        var fit = Math.Min(1, Math.Min(areaWidth * 0.92 / (DesignWidth * scale), (areaHeight - gap * 2) / (DesignHeight * scale)));
+        var fit = Fit(wanted, areaWidth * 0.92, areaHeight - margin * 2, scale);
         var width = (int)Math.Round(DesignWidth * scale * fit);
         var height = (int)Math.Round(DesignHeight * scale * fit);
 
-        var x = work.Left + (areaWidth - width) / 2;
-        var y = barAtTop ? top + gap : bottom - height - gap;
+        // Lined up with the Start button rather than always centred.
+        //
+        // Windows 11 centres its taskbar by default and can be set to align it
+        // left; Windows 10 was always left; Hearth's own bars put Start at the
+        // left (Taskbar, Panel), in the middle of a centred cluster (Docklike)
+        // or at a corner (the ring). A menu that always came out of the middle
+        // of the screen was right only by accident.
+        var anchor = service?.StartButtonRect(monitor) ?? StartTrigger.StartButtonRect(monitor);
+        int x, y;
 
-        // Content is laid out at design size and scaled down together, so the
-        // grid never reflows into a different shape on a small screen.
-        _root.LayoutTransform = fit < 1 ? new ScaleTransform(fit, fit) : Transform.Identity;
+        if (barVertical)
+        {
+            // A bar down one side: the menu sits beside it, level with the button.
+            x = hearthEdge == ScreenEdge.Left ? work.Left + margin : work.Right - width - margin;
+            y = anchor is { } side
+                ? (int)Math.Round(side.Top + side.Height / 2) - height / 2
+                : top + (areaHeight - height) / 2;
+        }
+        else
+        {
+            x = anchor is { } button
+                ? (int)Math.Round(button.Left + button.Width / 2) - width / 2
+                : work.Left + (areaWidth - width) / 2;
+            y = barAtTop ? top + margin : bottom - height - margin;
+        }
+
+        // Whatever the anchor says, it has to stay on this display.
+        x = Math.Clamp(x, work.Left + margin, Math.Max(work.Left + margin, work.Right - width - margin));
+        y = Math.Clamp(y, work.Top + margin, Math.Max(work.Top + margin, work.Bottom - height - margin));
+
+        // Content is laid out at design size and scaled as a whole, so the grid
+        // never reflows into a different shape on a small screen.
+        _root.LayoutTransform = Scale(fit);
+        if (StartStyle.SetRenderScale(fit)) RerenderIcons();
         SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
         return new Placement(new Int32Rect(x, y, width, height), scale * fit, taskbar);
+    }
+
+    /// <summary>
+    /// The detached placements: a corner, an edge or the middle of the work
+    /// area, with no relationship to the taskbar at all.
+    ///
+    /// The work area is used rather than the whole screen so the menu still
+    /// keeps clear of whatever bars are docked — the real taskbar, Hearth's own
+    /// bar, anyone else's app bar — without being anchored to any of them. No
+    /// taskbar is held up either: a detached menu is not standing on one, so an
+    /// auto-hidden bar is left to slide away as it normally would.
+    /// </summary>
+    private Placement PlaceDetached(IntPtr hwnd, RECT work, double scale, double wanted, int margin,
+        StartPlacement placement)
+    {
+        if (placement == StartPlacement.CentreLarge) wanted *= 1.25;
+
+        var areaWidth = work.Right - work.Left;
+        var areaHeight = work.Bottom - work.Top;
+
+        var fit = Fit(wanted, areaWidth - margin * 2, areaHeight - margin * 2, scale);
+        var width = (int)Math.Round(DesignWidth * scale * fit);
+        var height = (int)Math.Round(DesignHeight * scale * fit);
+
+        var x = placement switch
+        {
+            StartPlacement.BottomLeft or StartPlacement.TopLeft or StartPlacement.LeftCentre => work.Left + margin,
+            StartPlacement.BottomRight or StartPlacement.TopRight or StartPlacement.RightCentre => work.Right - width - margin,
+            _ => work.Left + (areaWidth - width) / 2,
+        };
+        var y = placement switch
+        {
+            StartPlacement.TopLeft or StartPlacement.TopCentre or StartPlacement.TopRight => work.Top + margin,
+            StartPlacement.BottomLeft or StartPlacement.BottomCentre or StartPlacement.BottomRight => work.Bottom - height - margin,
+            _ => work.Top + (areaHeight - height) / 2,
+        };
+
+        _root.LayoutTransform = Scale(fit);
+        if (StartStyle.SetRenderScale(fit)) RerenderIcons();
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+        return new Placement(new Int32Rect(x, y, width, height), scale * fit, IntPtr.Zero);
+    }
+
+    /// <summary>The size multiplier, cut down to whatever room there is.</summary>
+    private static double Fit(double wanted, double availableWidth, double availableHeight, double scale) =>
+        Math.Max(0.4, Math.Min(wanted, Math.Min(
+            availableWidth / (DesignWidth * scale),
+            availableHeight / (DesignHeight * scale))));
+
+    private static Transform Scale(double fit) =>
+        Math.Abs(fit - 1) < 0.001 ? Transform.Identity : new ScaleTransform(fit, fit);
+
+    /// <summary>
+    /// Turns Auto into a real placement.
+    ///
+    /// Almost always <see cref="StartPlacement.AboveTaskbar"/>, because that
+    /// branch is the one that knows about bars: it finds whichever bar is on
+    /// this display — Hearth's own first, the Windows taskbar otherwise — reads
+    /// its edge, and lines the menu up with the Start button on it. An earlier
+    /// version mapped the edge onto the centred detached placements instead,
+    /// which put the menu in the middle of the screen whatever the bar looked
+    /// like, and that is what the user saw.
+    ///
+    /// The ring is the exception: it has no edge to come from, so the middle is
+    /// the honest answer.
+    /// </summary>
+    private static StartPlacement ResolvePlacement(IntPtr monitor)
+    {
+        var placement = App.Settings.StartPlacement;
+        if (placement != StartPlacement.Auto) return placement;
+        if (Bar.BarService.Current is { IsRunning: true, Settings.Style: BarStyle.Halo }) return StartPlacement.Centre;
+        return StartPlacement.AboveTaskbar;
     }
 
     /// <summary>The taskbar window on a display: the primary one, or a secondary one.</summary>
@@ -613,13 +795,70 @@ internal sealed partial class StartMenuWindow : Window
         }
     }
 
+    /// <summary>
+    /// Brings the window up already drawn.
+    ///
+    /// Shown straight into place, the first thing on screen is DWM's own glass
+    /// frame around an empty window: the user saw "an outline, and then it
+    /// pops up". WPF composes asynchronously, so the window exists a frame or
+    /// two before its content does. Showing it off screen, letting one frame
+    /// compose, and only then moving it into place costs about 16 ms and the
+    /// menu arrives whole.
+    ///
+    /// The open animation starts before the move, so the fade is already under
+    /// way by the time anything is visible rather than beginning from nothing.
+    /// </summary>
+    private async Task PresentAsync(IntPtr hwnd, Placement? placement)
+    {
+        if (placement is not { } target)
+        {
+            Show();
+            AnimateOpen();
+            return;
+        }
+
+        var rect = target.Rect;
+        ShowActivated = false;
+        SetWindowPos(hwnd, IntPtr.Zero, -32000, -32000, rect.Width, rect.Height, SWP_NOZORDER | SWP_NOACTIVATE);
+        Show();
+        ShowActivated = true;
+
+        AnimateOpen();
+        _root.UpdateLayout();
+        await ComposedAsync().ConfigureAwait(true);
+
+        SetWindowPos(hwnd, IntPtr.Zero, rect.X, rect.Y, rect.Width, rect.Height, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    /// <summary>Completes once a frame has been composed. Rendering fires just before each one, so the second tick means the first is done.</summary>
+    private static Task ComposedAsync()
+    {
+        var done = new TaskCompletionSource();
+        var ticks = 0;
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            if (++ticks < 2) return;
+            CompositionTarget.Rendering -= handler;
+            done.TrySetResult();
+        };
+        CompositionTarget.Rendering += handler;
+
+        // A window that never renders (the display asleep, the session locked)
+        // must not leave the menu waiting for ever.
+        _ = Task.Delay(120).ContinueWith(_ => done.TrySetResult(), TaskScheduler.Default);
+        return done.Task;
+    }
+
     private void AnimateOpen()
     {
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         _openSlide.BeginAnimation(TranslateTransform.YProperty,
             new DoubleAnimation(10, 0, TimeSpan.FromMilliseconds(150)) { EasingFunction = ease });
+        // From 0.35 rather than 0: the window is presented mid-animation, and
+        // a first frame at zero opacity is the blank outline all over again.
         _foreground.BeginAnimation(OpacityProperty,
-            new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(110)) { EasingFunction = ease });
+            new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(110)) { EasingFunction = ease });
     }
 
     // ---- Data -------------------------------------------------------------
@@ -628,6 +867,7 @@ internal sealed partial class StartMenuWindow : Window
 
     private void RefreshApps(IReadOnlyList<LauncherItem> apps)
     {
+        _appsSource = apps;
         _apps = apps.GroupBy(a => a.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
@@ -828,9 +1068,9 @@ internal sealed partial class StartMenuWindow : Window
     {
         var name = UserInfo.DisplayName;
         var avatar = _avatar;
-        avatar.Width = 30;
-        avatar.Height = 30;
-        avatar.CornerRadius = new CornerRadius(15);
+        avatar.Width = _metrics.Avatar;
+        avatar.Height = _metrics.Avatar;
+        avatar.CornerRadius = new CornerRadius(_metrics.Avatar / 2);
         avatar.Background = StartStyle.Accent;
         avatar.Margin = new Thickness(0, 0, 10, 0);
         avatar.Child = new TextBlock
@@ -844,22 +1084,22 @@ internal sealed partial class StartMenuWindow : Window
         };
         var user = new PressableBorder(radius: 6)
         {
-            Padding = new Thickness(8, 5, 12, 5),
+            Padding = _metrics.UserPadding,
             ToolTip = "Account settings",
-            Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { avatar, StartStyle.Label(name, 13.5) } },
+            Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { avatar, StartStyle.Label(name, _metrics.UserFont) } },
         };
         user.Clicked += _ => OpenTarget("ms-settings:yourinfo");
 
-        var explorer = new ChromeButton(StartStyle.Folder, tooltip: "File Explorer", glyphSize: 16);
+        var explorer = new ChromeButton(StartStyle.Folder, tooltip: "File Explorer", glyphSize: _metrics.FooterGlyph);
         explorer.Clicked += _ => OpenTarget("explorer.exe");
 
-        var settings = new ChromeButton(StartStyle.Settings, tooltip: "Settings", glyphSize: 16);
+        var settings = new ChromeButton(StartStyle.Settings, tooltip: "Settings", glyphSize: _metrics.FooterGlyph);
         settings.Clicked += _ => OpenTarget("ms-settings:");
 
-        var options = new ChromeButton(StartStyle.More, tooltip: "Start menu options", glyphSize: 16);
+        var options = new ChromeButton(StartStyle.More, tooltip: "Start menu options", glyphSize: _metrics.FooterGlyph);
         options.Clicked += b => ShowOptionsMenu(b);
 
-        var power = new ChromeButton(StartStyle.Power, tooltip: "Power", glyphSize: 16);
+        var power = new ChromeButton(StartStyle.Power, tooltip: "Power", glyphSize: _metrics.FooterGlyph);
         power.Clicked += b => ShowPowerMenu(b);
 
         var right = new StackPanel
@@ -868,7 +1108,7 @@ internal sealed partial class StartMenuWindow : Window
             Children = { explorer, settings, options, power },
         };
 
-        var dock = new DockPanel { Margin = new Thickness(16, 8, 16, 8), LastChildFill = false };
+        var dock = new DockPanel { Margin = _metrics.FooterMargin, LastChildFill = false };
         DockPanel.SetDock(user, Dock.Left);
         DockPanel.SetDock(right, Dock.Right);
         dock.Children.Add(user);

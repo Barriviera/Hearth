@@ -37,6 +37,51 @@ internal sealed record TrayIcon(string Name, bool Hidden, int Index, ImageSource
 /// run on a UI thread). The interfaces are called through their vtables,
 /// slot numbers taken from UIAutomationClient.h (SDK 10.0.26100).
 /// </summary>
+/// <summary>
+/// Puts the foreground window back where it was.
+///
+/// Reading the tray drives Explorer's own taskbar, and opening the
+/// hidden-icons flyout activates it. Whatever the user was working in then
+/// loses focus mid-keystroke. Anything that touches the tray for Hearth's own
+/// reasons — rather than because the user clicked something — holds one of
+/// these, so the interruption never reaches them.
+/// </summary>
+internal sealed class ForegroundGuard : IDisposable
+{
+    private readonly IntPtr _before;
+
+    private ForegroundGuard(IntPtr before) => _before = before;
+
+    public static ForegroundGuard Take() => new(WindowTools.GetForegroundWindow());
+
+    public void Dispose()
+    {
+        try
+        {
+            if (_before == IntPtr.Zero) return;
+            var now = WindowTools.GetForegroundWindow();
+            if (now == _before) return;
+            // Only when something of the shell's took it: if the user clicked
+            // elsewhere meanwhile, that is where they want to be.
+            if (!IsShellWindow(now)) return;
+            Hosting.StartTrigger.ClaimForegroundRight();
+            WindowTools.Activate(_before);
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"tray: could not restore the foreground: {ex.Message}");
+        }
+    }
+
+    private static bool IsShellWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return true;
+        var name = WindowTools.ClassName(hwnd);
+        return name is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "TopLevelWindowForOverflowXamlIsland"
+            or "Xaml_WindowedPopupClass" or "Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow";
+    }
+}
+
 internal static class TrayIcons
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
@@ -73,6 +118,7 @@ internal static class TrayIcons
 
     private static List<TrayIcon> Read(bool includeHidden)
     {
+        using var keep = ForegroundGuard.Take();
         var clock = Stopwatch.StartNew();
         var marks = new List<string>();
         void Mark(string what) => marks.Add($"{what} {clock.ElapsedMilliseconds}");
@@ -248,6 +294,17 @@ internal static class TrayIcons
             TaskbarControl.PauseEnforcing(true);
             if (wasHidden) ShowWindow(taskbar, SW_SHOWNA);
 
+            // An auto-hidden taskbar that has slid away exposes nothing to UI
+            // Automation, whether or not Hearth has also given it an empty
+            // region — the region only takes away its pixels. So it still has
+            // to be brought up to be read.
+            //
+            // This used to return early when the region was applied, on the
+            // belief that the region alone freed the strip and auto-hide was
+            // never really on. Once auto-hide started working, the tray read
+            // zero icons. The raise is invisible while the region is on, which
+            // is the one thing the region does buy here, and ForegroundGuard
+            // puts the user's window back either way.
             if (TaskbarControl.AutoHide && !IsUp(taskbar))
             {
                 Hosting.StartTrigger.ClaimForegroundRight();

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Windows;
 using Hearth.Core.Diagnostics;
 
 namespace Hearth.App.Hosting;
@@ -174,6 +175,41 @@ internal sealed class StartTrigger : IDisposable
     }
 
     /// <summary>Checks every taskbar's Start button. Cheap: a few window lookups.</summary>
+    /// <summary>
+    /// Where Windows' own Start button is on a display, in screen pixels.
+    ///
+    /// Windows 11 centres the taskbar by default and can be set to align it
+    /// left, and Windows 10 was always left — so "above the taskbar" has to
+    /// mean "above the Start button", not "in the middle", or the menu comes
+    /// out of nowhere. The rect is read from the same hidden legacy "Start"
+    /// child the click handling uses; it stays accurate even when the taskbar
+    /// is hidden.
+    /// </summary>
+    public static Rect? StartButtonRect(IntPtr monitor)
+    {
+        foreach (var bar in Bars())
+        {
+            if (MonitorFromWindow(bar, MONITOR_DEFAULTTONEAREST) != monitor) continue;
+            var start = FindWindowEx(bar, IntPtr.Zero, "Start", null);
+            if (start == IntPtr.Zero || !GetWindowRect(start, out var rect)) continue;
+            if (rect.Right - rect.Left <= 0 || rect.Bottom - rect.Top <= 0) continue;
+            return new Rect(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        }
+        return null;
+
+        static IEnumerable<IntPtr> Bars()
+        {
+            var primary = FindWindow("Shell_TrayWnd", null);
+            if (primary != IntPtr.Zero) yield return primary;
+            for (var bar = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Shell_SecondaryTrayWnd", null);
+                 bar != IntPtr.Zero;
+                 bar = FindWindowEx(IntPtr.Zero, bar, "Shell_SecondaryTrayWnd", null))
+            {
+                yield return bar;
+            }
+        }
+    }
+
     private static bool IsOverStartButton(POINT pt)
     {
         return Hit(FindWindow("Shell_TrayWnd", null), pt) || AnySecondaryHit(pt);
@@ -409,6 +445,11 @@ internal sealed class StartTrigger : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
 
     [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPoint(POINT pt);

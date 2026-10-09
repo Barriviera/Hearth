@@ -45,11 +45,24 @@ public partial class DesktopSurface : UserControl
     private readonly List<MonitorSurface> _surfaces = [];
 
     private IDisposable? _desktopWatcher;
+    private WallpaperWatcher? _wallpaperWatcher;
+
+    /// <summary>Set once the catalogs have been read, so nothing lays out against an empty item set.</summary>
+    private bool _itemsLoaded;
+    private string _wallpaperSignature = string.Empty;
     private Point _virtualOrigin;
     private bool _detached;
 
     /// <summary>Everything needed to lay out one display.</summary>
-    private sealed record MonitorSurface(MonitorInfo Info, Rect LocalBounds, double Scale)
+    ///
+    /// <remarks>
+    /// <c>LocalBounds</c> is the whole display, which is what the wallpaper is
+    /// painted over. <c>WorkBounds</c> is what is left after the docked bars —
+    /// the Windows taskbar, Hearth's own bar, anyone else's app bar — and is
+    /// what the icon grid is laid out in. They used to be the same, so the
+    /// bottom row of icons sat underneath whatever was docked there.
+    /// </remarks>
+    private sealed record MonitorSurface(MonitorInfo Info, Rect LocalBounds, Rect WorkBounds, double Scale)
     {
         public int Columns { get; set; }
         public int Rows { get; set; }
@@ -84,6 +97,10 @@ public partial class DesktopSurface : UserControl
         _desktopWatcher = _desktopCatalog.Watch(() =>
             Dispatcher.InvokeAsync(async () => await RefreshItemsAsync().ConfigureAwait(true)));
 
+        // Hearth draws the background itself, so a change made in Settings or
+        // by a slideshow would otherwise only show up on the next start.
+        _wallpaperWatcher = new WallpaperWatcher(() => Dispatcher.BeginInvoke(RefreshWallpaper));
+
         App.Badges.Changed += OnBadgesChanged;
         _ = Task.Run(App.Badges.Refresh);
     }
@@ -109,40 +126,148 @@ public partial class DesktopSurface : UserControl
 
         _desktopWatcher?.Dispose();
         _desktopWatcher = null;
+        _wallpaperWatcher?.Dispose();
+        _wallpaperWatcher = null;
+        _workAreaTimer?.Stop();
         App.Badges.Changed -= OnBadgesChanged;
 
         TrySaveLayout();
     }
 
+    /// <summary>Everything on the home screen that is not hidden, for the bar's desktop stack.</summary>
+    internal IEnumerable<LauncherItem> VisibleItems() =>
+        _items.Values.Where(i => !_layout.IsHidden(i.Id));
+
     /// <summary>Rebuilds after an Explorer restart or a display change.</summary>
     internal void Rebuild() => RebuildEverything();
 
+    /// <summary>
+    /// System broadcasts reach the host window, not this control; the
+    /// wallpaper watcher wants to hear about WM_SETTINGCHANGE, which is what
+    /// the Settings app sends after a background change.
+    /// </summary>
+    internal void OnSystemMessage(int message, IntPtr wParam)
+    {
+        _wallpaperWatcher?.OnWindowMessage(message, wParam);
+
+        // A bar docking or undocking (Hearth's own, or anyone else's) changes
+        // how much room the grid has, so the grid is worked out again.
+        if (message == WM_SETTINGCHANGE && (int)wParam == SPI_SETWORKAREA) ScheduleWorkAreaRebuild();
+    }
+
+    private const int WM_SETTINGCHANGE = 0x001A;
+    private const int SPI_SETWORKAREA = 0x002F;
+
+    private System.Windows.Threading.DispatcherTimer? _workAreaTimer;
+
+    /// <summary>
+    /// Claiming a strip makes Windows broadcast several times over a second or
+    /// two while it reflows every window, so the grid is rebuilt once at the
+    /// end rather than on each one.
+    /// </summary>
+    private void ScheduleWorkAreaRebuild()
+    {
+        if (_workAreaTimer is null)
+        {
+            _workAreaTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(500),
+            };
+            _workAreaTimer.Tick += (_, _) =>
+            {
+                _workAreaTimer.Stop();
+                if (_detached) return;
+                Log.Write("work area changed; laying the grid out again");
+                RebuildEverything();
+            };
+        }
+        _workAreaTimer.Stop();
+        _workAreaTimer.Start();
+    }
+
+    /// <summary>
+    /// Repaints the background after the user changed it, without disturbing
+    /// anything else on screen.
+    ///
+    /// The watcher is deliberately noisy - a slideshow rewrites the same
+    /// registry values on every step, and the theme engine touches its cache
+    /// for reasons of its own - so the signature decides whether there is
+    /// really anything new to draw. A change to the displays themselves is
+    /// handed to the full rebuild, because the grid depends on it.
+    /// </summary>
+    internal void RefreshWallpaper()
+    {
+        if (_detached) return;
+        try
+        {
+            var signature = _wallpaper.Signature();
+            if (signature == _wallpaperSignature) return;
+
+            var monitors = SortedMonitors();
+            var sameDisplays = monitors.Count == _surfaces.Count &&
+                monitors.Zip(_surfaces).All(pair =>
+                    pair.First.DeviceId == pair.Second.Info.DeviceId &&
+                    pair.First.Bounds == pair.Second.Info.Bounds);
+
+            if (!sameDisplays)
+            {
+                Log.Write("wallpaper: the displays changed with it; rebuilding");
+                RebuildEverything();
+                return;
+            }
+
+            // Same displays, new picture: swap each plate's brush and leave the
+            // tiles, widgets and any open folder exactly where they are.
+            for (var i = 0; i < _surfaces.Count; i++)
+            {
+                var kept = _surfaces[i];
+                var replacement = new MonitorSurface(monitors[i], kept.LocalBounds, kept.WorkBounds, kept.Scale)
+                {
+                    Columns = kept.Columns,
+                    Rows = kept.Rows,
+                    CellWidth = kept.CellWidth,
+                    CellHeight = kept.CellHeight,
+                    PadX = kept.PadX,
+                    PadY = kept.PadY,
+                };
+                _surfaces[i] = replacement;
+                foreach (var key in _tileSurfaces.Where(e => ReferenceEquals(e.Value, kept)).Select(e => e.Key).ToList())
+                    _tileSurfaces[key] = replacement;
+            }
+            PaintWallpaper();
+            _wallpaperSignature = signature;
+            Log.Write("wallpaper: repainted");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("wallpaper refresh", ex);
+        }
+    }
+
     // ---- Monitors and wallpaper -----------------------------------------
+
+    /// <summary>
+    /// Primary display first. IDesktopWallpaper returns monitors in device
+    /// order, which is not screen order - here it hands back the secondary
+    /// panel first, so everything would be laid out on the wrong display.
+    /// Windows guarantees the primary monitor's top-left is the virtual
+    /// origin, which makes it identifiable without another API call.
+    /// </summary>
+    private List<MonitorInfo> SortedMonitors() => _wallpaper.GetMonitors()
+        .OrderByDescending(m => m.Bounds.X == 0 && m.Bounds.Y == 0)
+        .ThenBy(m => m.Bounds.Y)
+        .ThenBy(m => m.Bounds.X)
+        .ToList();
 
     private void BuildSurfaces()
     {
         _surfaces.Clear();
-        WallpaperCanvas.Children.Clear();
 
         _virtualOrigin = new Point(
             Win32.GetSystemMetrics(Win32.SM_XVIRTUALSCREEN),
             Win32.GetSystemMetrics(Win32.SM_YVIRTUALSCREEN));
 
-        var position = _wallpaper.GetPosition();
-        var background = _wallpaper.GetBackgroundColor();
-
-        // Primary display first. IDesktopWallpaper returns monitors in device
-        // order, which is not screen order — here it hands back the secondary
-        // panel first, so everything would be laid out on the wrong display.
-        // Windows guarantees the primary monitor's top-left is the virtual
-        // origin, which makes it identifiable without another API call.
-        var monitors = _wallpaper.GetMonitors()
-            .OrderByDescending(m => m.Bounds.X == 0 && m.Bounds.Y == 0)
-            .ThenBy(m => m.Bounds.Y)
-            .ThenBy(m => m.Bounds.X)
-            .ToList();
-
-        foreach (var monitor in monitors)
+        foreach (var monitor in SortedMonitors())
         {
             var local = new Rect(
                 monitor.Bounds.X - _virtualOrigin.X,
@@ -150,15 +275,45 @@ public partial class DesktopSurface : UserControl
                 monitor.Bounds.Width,
                 monitor.Bounds.Height);
 
-            var surface = new MonitorSurface(monitor, local, GetScaleFor(monitor.Bounds));
+            var work = WorkAreaFor(monitor.Bounds);
+            var localWork = new Rect(
+                work.X - _virtualOrigin.X,
+                work.Y - _virtualOrigin.Y,
+                work.Width,
+                work.Height);
+
+            var surface = new MonitorSurface(monitor, local, localWork, GetScaleFor(monitor.Bounds));
             ComputeGrid(surface);
             _surfaces.Add(surface);
+        }
 
+        PaintWallpaper();
+        _wallpaperSignature = _wallpaper.Signature();
+
+        foreach (var surface in _surfaces)
+        {
+            var wallpaperPath = surface.Info.WallpaperPath ?? "<none>";
+            Log.Write($"surface {surface.Info.DeviceId}: local={surface.LocalBounds}, " +
+                      $"scale={surface.Scale:F2}, wallpaper={wallpaperPath}");
+        }
+    }
+
+    /// <summary>One rectangle per display, plus the scrim over all of them.</summary>
+    private void PaintWallpaper()
+    {
+        WallpaperCanvas.Children.Clear();
+
+        var position = _wallpaper.GetPosition();
+        var background = _wallpaper.GetBackgroundColor();
+
+        foreach (var surface in _surfaces)
+        {
+            var local = surface.LocalBounds;
             var plate = new Rectangle
             {
                 Width = local.Width,
                 Height = local.Height,
-                Fill = _wallpaper.BuildBrush(monitor, position, background),
+                Fill = _wallpaper.BuildBrush(surface.Info, position, background),
             };
             Canvas.SetLeft(plate, local.X);
             Canvas.SetTop(plate, local.Y);
@@ -173,13 +328,53 @@ public partial class DesktopSurface : UserControl
         scrim.Freeze();
         ScrimRect.Fill = scrim;
         ScrimRect.Opacity = 1;
+    }
 
-        foreach (var surface in _surfaces)
+    /// <summary>
+    /// What is left of a display after everything docked to it. Falls back to
+    /// the whole display if the monitor cannot be identified, which is no
+    /// worse than the behaviour this replaced.
+    /// </summary>
+    private static Rect WorkAreaFor(Rect bounds)
+    {
+        var centre = new Win32.POINT(
+            (int)(bounds.X + bounds.Width / 2),
+            (int)(bounds.Y + bounds.Height / 2));
+
+        var monitor = Win32.MonitorFromPoint(centre, Win32.MONITOR_DEFAULTTONEAREST);
+        if (monitor == IntPtr.Zero) return bounds;
+
+        var info = new Win32.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<Win32.MONITORINFO>() };
+        if (!Win32.GetMonitorInfo(monitor, ref info)) return bounds;
+
+        var work = new Rect(
+            info.rcWork.Left,
+            info.rcWork.Top,
+            Math.Max(1, info.rcWork.Right - info.rcWork.Left),
+            Math.Max(1, info.rcWork.Bottom - info.rcWork.Top));
+
+        // A work area that is not inside the display is not one worth trusting.
+        work = bounds.Contains(work) || bounds.IntersectsWith(work) ? work : bounds;
+
+        // An auto-hiding Hearth bar reserves nothing from the shell — that is
+        // what spares every other window a resize each time it hides — but
+        // the home screen is Hearth's own layer, not "every other window",
+        // and the bar is a real strip of pixels the instant intellihide
+        // reveals it. Left out of this, the grid laid tiles right up to the
+        // bare edge, and a reveal covered whatever had landed there.
+        if (Bar.BarService.Current is { IsRunning: true } bar && bar.UnreservedMarginFor(monitor) is { } margin)
         {
-            var wallpaperPath = surface.Info.WallpaperPath ?? "<none>";
-            Log.Write($"surface {surface.Info.DeviceId}: local={surface.LocalBounds}, " +
-                      $"scale={surface.Scale:F2}, wallpaper={wallpaperPath}");
+            var thickness = margin.Thickness * GetScaleFor(bounds);
+            work = margin.Edge switch
+            {
+                ScreenEdge.Top => new Rect(work.X, work.Y + thickness, work.Width, Math.Max(1, work.Height - thickness)),
+                ScreenEdge.Bottom => new Rect(work.X, work.Y, work.Width, Math.Max(1, work.Height - thickness)),
+                ScreenEdge.Left => new Rect(work.X + thickness, work.Y, Math.Max(1, work.Width - thickness), work.Height),
+                _ => new Rect(work.X, work.Y, Math.Max(1, work.Width - thickness), work.Height),
+            };
         }
+
+        return work;
     }
 
     /// <summary>Per-monitor DPI, so a 4K secondary display gets real pixels.</summary>
@@ -213,16 +408,21 @@ public partial class DesktopSurface : UserControl
         // iOS packs tight to the top-left; Android breathes a little more.
         var edge = (settings.Style == HomeStyle.Ios ? 20 : 32) * scale;
 
-        surface.Columns = Math.Max(1, (int)((surface.LocalBounds.Width - edge * 2 + gap) / surface.CellWidth));
-        surface.Rows = Math.Max(1, (int)((surface.LocalBounds.Height - edge * 2 + gap) / surface.CellHeight));
+        var area = surface.WorkBounds;
+        surface.Columns = Math.Max(1, (int)((area.Width - edge * 2 + gap) / surface.CellWidth));
+        surface.Rows = Math.Max(1, (int)((area.Height - edge * 2 + gap) / surface.CellHeight));
 
-        // Centre the leftover space so the grid does not hug one edge.
+        // Centre the leftover space so the grid does not hug one edge. The
+        // padding is measured from the work area's own corner, which is what
+        // keeps the first row clear of a bar docked at the top and the last
+        // clear of one at the bottom.
         var usedWidth = surface.Columns * surface.CellWidth - gap;
         var usedHeight = surface.Rows * surface.CellHeight - gap;
-        surface.PadX = edge + Math.Max(0, (surface.LocalBounds.Width - edge * 2 - usedWidth) / 2);
-        surface.PadY = edge + (settings.Style == HomeStyle.Ios
+        surface.PadX = (area.X - surface.LocalBounds.X) + edge +
+                       Math.Max(0, (area.Width - edge * 2 - usedWidth) / 2);
+        surface.PadY = (area.Y - surface.LocalBounds.Y) + edge + (settings.Style == HomeStyle.Ios
             ? 0
-            : Math.Max(0, (surface.LocalBounds.Height - edge * 2 - usedHeight) / 2));
+            : Math.Max(0, (area.Height - edge * 2 - usedHeight) / 2));
     }
 
     // ---- Items ----------------------------------------------------------
@@ -276,6 +476,10 @@ public partial class DesktopSurface : UserControl
         _items.Clear();
         foreach (var item in discovered) _items[item.Id] = item;
 
+        // Only now is the item set real; before this a relayout would hand
+        // Reconcile an empty live set (see RelayoutTiles).
+        if (_items.Count > 0) _itemsLoaded = true;
+
         RelayoutTiles();
         await ResolveAppIdsAsync().ConfigureAwait(true);
     }
@@ -283,6 +487,11 @@ public partial class DesktopSurface : UserControl
     private void RelayoutTiles()
     {
         if (_surfaces.Count == 0) return;
+
+        // Before the first catalog read there are no items, and laying out
+        // with none of them would hand Reconcile an empty live set. Reconcile
+        // guards against that too, but nothing good comes of getting there.
+        if (!_itemsLoaded) return;
 
         ItemCanvas.Children.Clear();
         _tiles.Clear();

@@ -20,10 +20,19 @@ internal static class WindowTools
         "Shell_InputSwitchTopLevelWindow", "Windows.Internal.Shell.TabProxyWindow",
     };
 
-    /// <summary>Roughly Alt+Tab's rules: visible, unowned, not a tool window, not cloaked, titled.</summary>
+    /// <summary>
+    /// Roughly Alt+Tab's rules: visible, unowned, not a tool window, not
+    /// cloaked, titled.
+    ///
+    /// Hearth's own windows are included when they pass the same tests, so its
+    /// settings window appears on the bar and in Recents like any other window
+    /// — the user's report was that it did not. Everything else Hearth puts on
+    /// screen is a tool window or non-activating (the desktop host, Start, the
+    /// bars, the halo), so the ordinary rules already leave those out.
+    /// </summary>
     public static bool IsSwitchable(IntPtr hwnd)
     {
-        if (!IsWindowVisible(hwnd) || IsOwnProcess(hwnd)) return false;
+        if (!IsWindowVisible(hwnd)) return false;
         if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
 
         var ex = ExStyle(hwnd);
@@ -110,7 +119,42 @@ internal static class WindowTools
             }, IntPtr.Zero);
         }
         var path = ProcessPath(target);
-        return path.Length > 0 ? Path.GetFileName(path) : string.Empty;
+        return path.Length > 0 ? FriendlyName(path) : string.Empty;
+    }
+
+    private static readonly Dictionary<string, string> FriendlyNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What a person calls the program: "Vivaldi", not "vivaldi.exe".
+    ///
+    /// The file's own description is what Explorer and the taskbar show, so it
+    /// is what a bar should show too. Cached, because reading version info
+    /// opens the file every time and a bar asks on every rebuild.
+    /// </summary>
+    public static string FriendlyName(string path)
+    {
+        if (path.Length == 0) return string.Empty;
+        lock (FriendlyNames)
+        {
+            if (FriendlyNames.TryGetValue(path, out var cached)) return cached;
+        }
+
+        var name = Path.GetFileNameWithoutExtension(path);
+        try
+        {
+            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+            var described = info.FileDescription?.Trim();
+            if (string.IsNullOrEmpty(described)) described = info.ProductName?.Trim();
+            // Some programs put a sentence in FileDescription; a name is short.
+            if (!string.IsNullOrEmpty(described) && described.Length <= 40) name = described;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Keep the file name.
+        }
+
+        lock (FriendlyNames) FriendlyNames[path] = name;
+        return name;
     }
 
     public static string ProcessPath(IntPtr hwnd)
@@ -148,6 +192,11 @@ internal static class WindowTools
         }
         if (handle == IntPtr.Zero) handle = GetClassLongPtr(hwnd, GCLP_HICON);
         if (handle == IntPtr.Zero) handle = GetClassLongPtr(hwnd, GCLP_HICONSM);
+
+        // Plenty of windows set no icon at all — installed web apps are the
+        // common case, and Hearth's own settings window was another — and a
+        // blank square on the bar is worse than the program's file icon.
+        if (handle == IntPtr.Zero) return FromProgram(hwnd);
         if (handle == IntPtr.Zero) return null;
         try
         {
@@ -162,6 +211,23 @@ internal static class WindowTools
     }
 
     /// <summary>Brings a window forward, restoring it first if it is minimized.</summary>
+    /// <summary>The program file's own icon, for a window that carries none.</summary>
+    private static ImageSource? FromProgram(IntPtr hwnd)
+    {
+        try
+        {
+            var path = ProcessPath(hwnd);
+            if (path.Length == 0) return null;
+            var icon = Hearth.Core.Icons.IconExtractor.Extract(path, 64);
+            return icon?.ToBitmapSource();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Hearth] window icon fallback failed: {ex.Message}");
+            return null;
+        }
+    }
+
     public static void Activate(IntPtr hwnd)
     {
         if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
@@ -180,6 +246,8 @@ internal static class WindowTools
     public static bool Maximize(IntPtr hwnd) => PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_MAXIMIZE), IntPtr.Zero);
 
     public static bool Restore(IntPtr hwnd) => PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_RESTORE), IntPtr.Zero);
+
+    public static bool Minimize(IntPtr hwnd) => PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_MINIMIZE), IntPtr.Zero);
 
     // ---- Keys -------------------------------------------------------------------
 
@@ -320,6 +388,7 @@ internal static class WindowTools
     private const int WM_SYSCOMMAND = 0x0112;
     private const int SC_CLOSE = 0xF060;
     private const int SC_MAXIMIZE = 0xF030;
+    private const int SC_MINIMIZE = 0xF020;
     private const int SC_RESTORE = 0xF120;
     private const int ICON_BIG = 1;
     private const int ICON_SMALL2 = 2;

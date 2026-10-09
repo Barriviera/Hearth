@@ -540,6 +540,24 @@ public sealed class HomeLayout
         IReadOnlyList<DisplayGrid> displays,
         out int unplaced)
     {
+        unplaced = 0;
+
+        // Nothing live, but something placed, means the catalogs have not been
+        // read yet - not that every item on the home screen was uninstalled at
+        // once. Carrying on would empty every folder (its contents are not
+        // "live", so they are filtered out, and a folder under two items
+        // dissolves) and sweep every placement off every arrangement, and none
+        // of that is recoverable.
+        //
+        // This really happened: a relayout triggered by a work-area change
+        // landed between start-up and the first catalog read, and the log shows
+        // it exactly - "relayout: 0 tile(s)" one second before "apps catalog:
+        // 224 app(s)", with five folders gone and their 33 items loose on the
+        // grid afterwards. The caller now waits for the first load as well,
+        // but this is the guard that makes the data safe whatever calls it.
+        if (liveItemIds.Count == 0 && (Groups.Count > 0 || Arrangements.Any(a => a.Monitors.Any(m => m.Placements.Count > 0))))
+            return false;
+
         var changed = Activate(displays);
         var liveItems = new HashSet<string>(liveItemIds, StringComparer.OrdinalIgnoreCase);
         var allMonitors = Arrangements.SelectMany(a => a.Monitors).ToList();

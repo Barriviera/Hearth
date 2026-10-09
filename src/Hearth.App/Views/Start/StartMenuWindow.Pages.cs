@@ -32,6 +32,27 @@ internal sealed partial class StartMenuWindow
     private const double SwipeThreshold = 70;
     private const double CellGap = 10;
     private const double PageIcon = 48;
+
+    /// <summary>
+    /// The icon size a page tile can use and still fit its label.
+    ///
+    /// A fixed size clipped labels the moment the grid grew: the cell got
+    /// shorter, the icon did not, and the two-line label ran off the bottom.
+    /// The label's own height is what is reserved first — it is the part that
+    /// cannot shrink without becoming unreadable — and the icon takes what is
+    /// left, down to a floor below which the tile is not worth drawing.
+    /// </summary>
+    private static double PageIconFor(double cellHeight)
+    {
+        // Tile padding (8 + 4), then IconTile's own label gap and label box.
+        const double Chrome = 12 + 6 + 34;
+        var forIcon = cellHeight - CellGap - Chrome;
+        // IconTile pads the icon by 10% on each side inside its box.
+        return Math.Clamp(forIcon / 1.2, 26, PageIcon);
+    }
+
+    /// <summary>The icon size for the grid as it stands, so tile builders need no extra argument.</summary>
+    private double CurrentPageIcon => PageIconFor(CellSize().Height);
     private const string DragFormat = "HearthStartPlacement";
 
     private Grid _pageHost = null!;
@@ -344,7 +365,7 @@ internal sealed partial class StartMenuWindow
 
     private StartTile BuildPageTile(LauncherItem item, GridGroup? inFolder)
     {
-        var tile = new StartTile(item, PageIcon, showLabel: true, Desktop?.FitFor(item.Id) ?? Core.Icons.IconFit.Auto)
+        var tile = new StartTile(item, CurrentPageIcon, showLabel: true, Desktop?.FitFor(item.Id) ?? Core.Icons.IconFit.Auto)
         {
             Padding = new Thickness(2, 6, 2, 2),
         };
@@ -389,7 +410,7 @@ internal sealed partial class StartMenuWindow
     private StartTile BuildFolderTile(GridGroup group)
     {
         var folder = new LauncherItem { Id = group.PlacementId, DisplayName = group.Name, Kind = LauncherItemKind.Group };
-        var tile = new StartTile(folder, PageIcon) { Padding = new Thickness(2, 6, 2, 2) };
+        var tile = new StartTile(folder, CurrentPageIcon) { Padding = new Thickness(2, 6, 2, 2) };
         tile.Tile.Shape = App.Settings.IconShape;
         tile.Tile.FolderPadBrush = StartStyle.Field;
         var edge = new Pen(StartStyle.CardEdge, 1);

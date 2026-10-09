@@ -139,8 +139,19 @@ public sealed class AppsFolderCatalog
             Kind = LauncherItemKind.App,
             Target = aumid,
             FileSystemPath = fsPath,
+            // An installed Steam game reaches the apps folder as a .url in the
+            // Start menu, exactly like the one on the desktop — so it gets the
+            // library artwork too. Without this the desktop's games were sharp
+            // and the same games in Start's Games category were the 32 px .ico.
+            SteamAppId = SteamIdFor(fsPath),
         };
     }
+
+    /// <summary>The Steam app id behind a .url shortcut, or null for anything else.</summary>
+    private static string? SteamIdFor(string? path) =>
+        path is not null && path.EndsWith(".url", StringComparison.OrdinalIgnoreCase)
+            ? Icons.SteamArtwork.AppIdOf(Icons.SteamArtwork.UrlOf(path))
+            : null;
 
     private static bool IsNoise(string aumid)
     {

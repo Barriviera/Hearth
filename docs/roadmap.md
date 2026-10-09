@@ -53,6 +53,21 @@ easiest.
   websites, files, folders)
 - `start-hearth.cmd` / `start-hearth.ps1`: build, clean quit (`--quit`),
   run from `artifacts\run`
+- Tablet mode: an Auto that follows the attached keyboard and pointer, a
+  navigation bar, full-screen Start with pages side by side, a DWM-thumbnail
+  task switcher with the tray icons in it, auto-maximize and edge gestures
+- Live wallpaper: a background changed in Settings, or stepped by a slideshow,
+  repaints without restarting Hearth
+- Another program's menu or flyout closes when you click Hearth, which it
+  could not before, because Hearth never takes the foreground
+- Start menu placement: above the taskbar, any corner or edge of the work
+  area, or the middle of the screen (and a larger middle); a size multiplier,
+  an edge gap, and Standard / Compact density
+- An optional bar of Hearth's own, in five styles: Taskbar, Panel (with
+  Hearth widgets as applets), Menu bar and dock, Docklike, and Halo — which
+  has no bar at all and instead paints each running app as an arc of the
+  screen's border. It can take the Windows taskbar off the screen without
+  disabling it, so the tray icons and the hidden-icon flyout still work
 
 ## Next
 

@@ -36,6 +36,9 @@ internal static class ShelfFolder
 
     public static event Action? Changed;
 
+    /// <summary>What a drop being saved is doing, or null when nothing is. Any thread.</summary>
+    public static event Action<string?>? Status;
+
     public static ShelfConfig Config => _config ??= Store.Load();
 
     /// <summary>The folder mode's folder, if it still exists; the stash otherwise.</summary>
@@ -112,6 +115,24 @@ internal static class ShelfFolder
         worker.SetApartmentState(ApartmentState.STA);
         worker.Start();
     }
+
+    /// <summary>
+    /// Saves what a drag from outside Explorer handed over: a browser's image
+    /// bytes, the picture behind a link, or a shortcut to the page. Returns at
+    /// once; the shelf's watcher picks the file up when it lands.
+    /// </summary>
+    public static void Save(ShelfDropContent content) => ShelfSave.Start(content, Location);
+
+    internal static void NotifyChanged() => Changed?.Invoke();
+
+    internal static void Report(string? message)
+    {
+        CurrentStatus = message;
+        Status?.Invoke(message);
+    }
+
+    /// <summary>The last thing <see cref="Report"/> said, for a view built mid-save.</summary>
+    public static string? CurrentStatus { get; private set; }
 
     public static void BeginWatching()
     {

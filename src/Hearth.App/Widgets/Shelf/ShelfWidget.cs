@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using Hearth.Core.Shell;
@@ -38,7 +39,19 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
         private const int Limit = 100;
 
         private readonly WidgetHeader _header;
-        private readonly WrapPanel _tiles = new();
+
+        /// <summary>
+        /// A grid rather than a wrapping row of fixed-width tiles.
+        ///
+        /// Wrapping left a gutter the width of most of another tile unused on
+        /// every row — the shelf looked half empty at any size that was not an
+        /// exact multiple of the tile. The column count is worked out from the
+        /// width it is actually given, and the tiles stretch to fill it.
+        /// </summary>
+        private readonly UniformGrid _tiles = new();
+
+        private int _columns;
+        private IReadOnlyList<string> _shown = [];
         private readonly FrameworkElement _empty;
         private readonly Border _dropHint;
         private readonly TextBlock _dropText;
@@ -49,7 +62,7 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
             _header.AddAction("\uE838", "Open folder", () => ShellLauncher.Open(ShelfFolder.Location));
             _header.AddAction("\uE713", "Shelf settings", () => widget.Configure());
 
-            _empty = WidgetLayout.Empty(context, "\uE896", "Drop files here to keep them handy");
+            _empty = WidgetLayout.Empty(context, "\uE896", "Drop files, pictures or links here");
 
             _dropText = WidgetChrome.Text(context, "Drop to copy here", 13, WidgetChrome.Accent, FontWeights.SemiBold);
             _dropText.HorizontalAlignment = HorizontalAlignment.Center;
@@ -68,7 +81,13 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
             var layout = new DockPanel();
             DockPanel.SetDock(_header, Dock.Top);
             layout.Children.Add(_header);
-            layout.Children.Add(new Grid { Children = { WidgetLayout.Scroller(_tiles), _empty, _dropHint } });
+            var scroller = WidgetLayout.Scroller(_tiles);
+            _tiles.SizeChanged += (_, e) =>
+            {
+                if (Math.Abs(e.PreviousSize.Width - e.NewSize.Width) < 1) return;
+                if (Columns(e.NewSize.Width) != _columns) Rebuild();
+            };
+            layout.Children.Add(new Grid { Children = { scroller, _empty, _dropHint } });
             SetBody(layout);
 
             AllowDrop = true;
@@ -80,17 +99,38 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
             While(() =>
             {
                 ShelfFolder.Changed += OnChanged;
+                ShelfFolder.Status += OnStatus;
                 ShelfFolder.BeginWatching();
             }, () =>
             {
                 ShelfFolder.Changed -= OnChanged;
+                ShelfFolder.Status -= OnStatus;
                 ShelfFolder.EndWatching();
             });
         }
 
-        protected override void OnShown() => Rebuild();
+        protected override void OnShown()
+        {
+            Rebuild();
+            ShowStatus(ShelfFolder.CurrentStatus);
+        }
 
         private void OnChanged() => Post(Rebuild);
+
+        private void OnStatus(string? message) => Post(() => ShowStatus(message));
+
+        /// <summary>The drop hint doubles as the "saving" banner.</summary>
+        private void ShowStatus(string? message)
+        {
+            if (message is null)
+            {
+                _dropHint.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            _dropText.Text = message;
+            _dropHint.Visibility = Visibility.Visible;
+        }
 
         private void Rebuild()
         {
@@ -100,8 +140,27 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
             _header.Detail = entries.Count == 0 ? string.Empty : entries.Count > Limit ? $"{Limit}+" : entries.Count.ToString();
             _empty.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
+            var columns = Columns(_tiles.ActualWidth);
+            var shown = entries.Take(Limit).ToList();
+
+            // A host that rebuilds its tree hands the same view back unloaded
+            // and loaded again, and the bar does that every time any window
+            // anywhere is renamed. A tile per file is the whole cost of this
+            // widget, so it is only paid when the folder or the shape changed.
+            if (columns == _columns && shown.SequenceEqual(_shown, StringComparer.OrdinalIgnoreCase)) return;
+
+            _columns = columns;
+            _shown = shown;
+            _tiles.Columns = columns;
             _tiles.Children.Clear();
-            foreach (var path in entries.Take(Limit)) _tiles.Children.Add(Tile(path));
+            foreach (var path in shown) _tiles.Children.Add(Tile(path));
+        }
+
+        /// <summary>How many tiles of a readable width fit across.</summary>
+        private int Columns(double width)
+        {
+            if (width <= 0) width = ActualWidth > 0 ? ActualWidth : 70 * S;
+            return Math.Max(1, (int)Math.Floor(width / (68 * S)));
         }
 
         private FrameworkElement Tile(string path)
@@ -116,7 +175,8 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
 
             var tile = new Pressable(() => ShellLauncher.Open(path))
             {
-                Width = 78 * S,
+                // Stretches to its share of the row; the grid decides the width.
+                MinWidth = 60 * S,
                 CornerRadius = new CornerRadius(10 * S),
                 Padding = new Thickness(4 * S, 6 * S, 4 * S, 4 * S),
                 Child = new StackPanel { Children = { icon, name } },
@@ -142,36 +202,74 @@ public sealed class ShelfWidget : IWidget, IConfigurableWidget
         private void OnDragOver(object sender, DragEventArgs e)
         {
             e.Handled = true;
-            if (DroppedPaths(e) is not { Length: > 0 } paths || paths.All(IsOnShelf))
+
+            if (DroppedPaths(e) is { Length: > 0 } paths)
             {
-                e.Effects = DragDropEffects.None;
-                _dropHint.Visibility = Visibility.Collapsed;
+                if (paths.All(IsOnShelf))
+                {
+                    e.Effects = DragDropEffects.None;
+                    _dropHint.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                var move = WantsMove(e);
+                e.Effects = move ? DragDropEffects.Move : DragDropEffects.Copy;
+                _dropText.Text = move ? $"Drop to move to {ShelfFolder.Name}" : $"Drop to copy to {ShelfFolder.Name}";
+                _dropHint.Visibility = Visibility.Visible;
                 return;
             }
 
-            var move = WantsMove(e);
-            e.Effects = move ? DragDropEffects.Move : DragDropEffects.Copy;
-            _dropText.Text = move ? $"Drop to move to {ShelfFolder.Name}" : $"Drop to copy to {ShelfFolder.Name}";
-            _dropHint.Visibility = Visibility.Visible;
+            // A browser hands over an image as bytes or a URL, never as a path.
+            if (BrowserDrop.IsPresent(e.Data))
+            {
+                e.Effects = Accept(e);
+                _dropText.Text = $"Drop to save to {ShelfFolder.Name}";
+                _dropHint.Visibility = Visibility.Visible;
+                return;
+            }
+
+            e.Effects = DragDropEffects.None;
+            _dropHint.Visibility = Visibility.Collapsed;
         }
+
+        /// <summary>Browsers offer Copy, Link or both; pick one they allow.</summary>
+        private static DragDropEffects Accept(DragEventArgs e) =>
+            (e.AllowedEffects & DragDropEffects.Copy) != 0 ? DragDropEffects.Copy
+            : (e.AllowedEffects & DragDropEffects.Link) != 0 ? DragDropEffects.Link
+            : DragDropEffects.None;
 
         private void OnDragLeave(object sender, DragEventArgs e)
         {
             // Leaving a child raises this too; only a real exit hides the hint.
             var p = e.GetPosition(this);
             if (p.X > 0 && p.Y > 0 && p.X < ActualWidth && p.Y < ActualHeight) return;
-            _dropHint.Visibility = Visibility.Collapsed;
+            ShowStatus(ShelfFolder.CurrentStatus);
         }
 
         private void OnDrop(object sender, DragEventArgs e)
         {
             e.Handled = true;
             _dropHint.Visibility = Visibility.Collapsed;
-            if (DroppedPaths(e) is not { Length: > 0 } paths) return;
 
-            var move = WantsMove(e);
-            e.Effects = move ? DragDropEffects.Move : DragDropEffects.Copy;
-            ShelfFolder.Add(paths, move, WidgetFiles.OwnerOf(this));
+            if (DroppedPaths(e) is { Length: > 0 } paths)
+            {
+                var move = WantsMove(e);
+                e.Effects = move ? DragDropEffects.Move : DragDropEffects.Copy;
+                ShelfFolder.Add(paths, move, WidgetFiles.OwnerOf(this));
+                return;
+            }
+
+            // The source only keeps its data alive until this returns, so the
+            // bytes have to be taken here; writing them happens in the background.
+            var content = BrowserDrop.Take(e.Data);
+            if (content is null)
+            {
+                e.Effects = DragDropEffects.None;
+                return;
+            }
+
+            e.Effects = Accept(e);
+            ShelfFolder.Save(content);
         }
 
         private static bool IsOnShelf(string path) =>

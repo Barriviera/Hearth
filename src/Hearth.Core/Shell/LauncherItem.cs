@@ -45,5 +45,14 @@ public sealed class LauncherItem
     /// <summary>User override, e.g. a hand-picked icon pack entry.</summary>
     public string? IconOverridePath { get; set; }
 
+    /// <summary>
+    /// Set for a Steam shortcut. The icon is composed from Steam's own library
+    /// artwork rather than the 32 px .ico the shortcut points at — but only on
+    /// the icon service's render thread, because composing it needs WPF
+    /// imaging and those types create a Dispatcher on whatever thread touches
+    /// them first.
+    /// </summary>
+    public string? SteamAppId { get; init; }
+
     public override string ToString() => $"{Kind}: {DisplayName}";
 }

@@ -53,7 +53,7 @@ internal sealed class StartMenuController : IDisposable
 
     private bool _windowLight;
 
-    private static bool SystemThemeIsLight() => Views.Start.SystemTheme.SystemUsesLight;
+    private static bool SystemThemeIsLight() => Views.Start.StartStyle.Resolve();
 
     public void SetReplaceStart(bool replace)
     {
@@ -86,7 +86,21 @@ internal sealed class StartMenuController : IDisposable
     private void OnTriggered(StartTrigger.StartSource source) =>
         _dispatcher.BeginInvoke(Toggle);
 
-    public void Toggle()
+    public void Toggle() => Toggle(null);
+
+    /// <summary>
+    /// Opens the menu, or closes it when it is already showing what was asked
+    /// for. This is what a Start button is: clicking it twice puts you back
+    /// where you started.
+    ///
+    /// Hearth's own bar needs this rather than <see cref="Open"/> because a
+    /// click on the bar never reaches the menu as a deactivation — the bar is
+    /// WS_EX_NOACTIVATE, so the menu never loses focus and never hides itself.
+    /// Asking for a different tab while the menu is open switches to it
+    /// instead of closing, which is the only reading of a second click on a
+    /// different button that makes sense.
+    /// </summary>
+    public void Toggle(string? tab)
     {
         // Key repeat or a double click can arrive as two triggers in a row.
         if (DateTime.UtcNow - _lastToggle < TimeSpan.FromMilliseconds(150)) return;
@@ -94,11 +108,16 @@ internal sealed class StartMenuController : IDisposable
 
         if (IsOpen)
         {
-            _window!.HideMenu();
+            if (tab is null || _window!.IsShowing(tab))
+            {
+                _window!.HideMenu();
+                return;
+            }
+            _window!.SelectTab(tab);
             return;
         }
 
-        Open();
+        Open(tab);
     }
 
     public void Open(string? tab = null)
@@ -133,6 +152,7 @@ internal sealed class StartMenuController : IDisposable
     public const string TabletPrefix = "tablet:";
     public const string SettingsPrefix = "settings:";
     public const string LaunchPrefix = "launch:";
+    public const string BarPrefix = "bar:";
 
     /// <summary>
     /// "--start [all|pages|categories|widgets|edit|selftest]", "--quit",
@@ -145,6 +165,9 @@ internal sealed class StartMenuController : IDisposable
 
         var tablet = Array.FindIndex(args, a => a.Equals("--tablet", StringComparison.OrdinalIgnoreCase));
         if (tablet >= 0) return TabletPrefix + (tablet + 1 < args.Length ? args[tablet + 1].ToLowerInvariant() : "toggle");
+
+        var bar = Array.FindIndex(args, a => a.Equals("--bar", StringComparison.OrdinalIgnoreCase));
+        if (bar >= 0) return BarPrefix + (bar + 1 < args.Length ? args[bar + 1].ToLowerInvariant() : "toggle");
 
         var launch = Array.FindIndex(args, a => a.Equals("--launch", StringComparison.OrdinalIgnoreCase));
         if (launch >= 0 && launch + 1 < args.Length) return LaunchPrefix + args[launch + 1];
@@ -195,6 +218,11 @@ internal sealed class StartMenuController : IDisposable
                 HandleTabletRequest(tab[TabletPrefix.Length..]);
                 return;
             }
+            if (tab.StartsWith(BarPrefix, StringComparison.Ordinal))
+            {
+                HandleBarRequest(tab[BarPrefix.Length..]);
+                return;
+            }
             if (tab.StartsWith(LaunchPrefix, StringComparison.Ordinal))
             {
                 // "Hearth.exe --launch <app id or path>": the same launch as a tap on a tile.
@@ -238,6 +266,48 @@ internal sealed class StartMenuController : IDisposable
         catch (Exception ex)
         {
             Log.Error($"request '{tab}'", ex);
+        }
+    }
+
+    /// <summary>
+    /// "Hearth.exe --bar on|off|toggle|&lt;style&gt;". The styles are the way the bar
+    /// is exercised without clicking through settings on the user's own machine.
+    /// </summary>
+    private static void HandleBarRequest(string what)
+    {
+        if (Bar.BarService.Current is not { } bar)
+        {
+            Log.Write($"bar request '{what}' ignored: the bar service is not running");
+            return;
+        }
+        Log.Write($"bar request: {what}");
+        switch (what)
+        {
+            case "on": bar.SetEnabled(true); break;
+            case "off": bar.SetEnabled(false); break;
+            case "toggle": bar.SetEnabled(!bar.Settings.Enabled); break;
+            case "settings": Views.SettingsScreen.SettingsWindow.Open("bar"); break;
+            default:
+                var style = what switch
+                {
+                    "taskbar" => (BarStyle?)BarStyle.Taskbar,
+                    "panel" => BarStyle.Panel,
+                    "menubar" or "dock" => BarStyle.MenuBarAndDock,
+                    "docklike" => BarStyle.Docklike,
+                    "halo" => BarStyle.Halo,
+                    _ => null,
+                };
+                if (style is null)
+                {
+                    Log.Write($"bar request '{what}' not understood");
+                    return;
+                }
+                bar.Settings.Style = style.Value;
+                bar.Settings.Enabled = true;
+                var (min, max, preferred) = bar.Settings.ThicknessRange();
+                if (bar.Settings.Thickness < min || bar.Settings.Thickness > max) bar.Settings.Thickness = preferred;
+                if (!bar.IsRunning) bar.SetEnabled(true); else bar.SaveAndApply();
+                break;
         }
     }
 
@@ -293,11 +363,13 @@ internal sealed class StartMenuController : IDisposable
         _window = null;
     }
 
-    /// <summary>The window, rebuilt if the Windows theme changed since it was made.</summary>
+    /// <summary>The window, rebuilt if the Windows theme or the density changed since it was made.</summary>
     private void EnsureWindow()
     {
         var light = SystemThemeIsLight();
-        if (_window is not null && _windowLight != light && !_window.IsVisible)
+        var density = Views.Start.StartMetrics.Effective(App.Settings);
+        var stale = _window is not null && (_windowLight != light || _window.Density != density);
+        if (stale && !_window!.IsVisible)
         {
             _window.CloseForExit();
             _window = null;

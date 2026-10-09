@@ -278,6 +278,7 @@ public sealed class DesktopHost : IDisposable
                 Resize();
                 _surface?.Rebuild();
                 Tablet.TabletMode.Current?.OnDisplaysChanged();
+                Bar.BarService.Current?.OnDisplaysChanged();
             };
         }
 
@@ -303,6 +304,12 @@ public sealed class DesktopHost : IDisposable
                 break;
 
             case WM_MOUSEACTIVATE:
+                // The one message every click on the desktop produces, because
+                // Hearth is never the active window. Another program's menu or
+                // flyout would otherwise stay open, since the click never took
+                // the foreground away from it.
+                ForeignPopups.DismissForClick();
+
                 // Belt and braces with WS_EX_NOACTIVATE: clicking the desktop
                 // must not activate, because activation raises the window.
                 // The exception is text entry, which needs focus.
@@ -312,6 +319,12 @@ public sealed class DesktopHost : IDisposable
 
             case WM_DISPLAYCHANGE:
                 ScheduleDisplayRebuild();
+                break;
+
+            case WM_SETTINGCHANGE:
+                // Hearth paints the background itself, so a change made in
+                // Settings has to be noticed rather than redrawn for us.
+                _surface?.OnSystemMessage(msg, wParam);
                 break;
 
             default:
@@ -325,6 +338,7 @@ public sealed class DesktopHost : IDisposable
                     if (App.Settings.HideShellIcons) _layer.HideShellIcons();
                     SendToBottom();
                     Tablet.TabletMode.Current?.OnExplorerRestarted();
+                    Bar.BarService.Current?.OnExplorerRestarted();
                 }
                 break;
         }
@@ -393,6 +407,7 @@ public sealed class DesktopHost : IDisposable
     private const int WM_WINDOWPOSCHANGING = 0x0046;
     private const int WM_MOUSEACTIVATE = 0x0021;
     private const int WM_DISPLAYCHANGE = 0x007E;
+    private const int WM_SETTINGCHANGE = 0x001A;
     private const int MA_NOACTIVATE = 3;
 
     private const int SW_SHOWNA = 8;

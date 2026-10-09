@@ -145,6 +145,21 @@ internal static partial class Win32
     internal static partial IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 
     internal const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetMonitorInfo(IntPtr hmonitor, ref MONITORINFO info);
+
+    /// <summary>A display's full rectangle and what is left of it after the docked bars.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
     internal const int MDT_EFFECTIVE_DPI = 0;
 
     [LibraryImport("user32.dll")]

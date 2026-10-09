@@ -88,7 +88,7 @@ internal sealed partial class StartMenuWindow
             _letterHeaders[group.Key] = header;
             _allList.Children.Add(header);
 
-            var rows = new UniformGrid { Columns = 3 };
+            var rows = new UniformGrid { Columns = ColumnsFor(_metrics.AppRowWidth) };
             foreach (var app in group)
             {
                 var row = new ResultRow(app.DisplayName, null, app);
@@ -150,7 +150,7 @@ internal sealed partial class StartMenuWindow
     private WrapPanel _cardPanel = null!;
     private DockPanel _categoryDetail = null!;
     private TextBlock _categoryTitle = null!;
-    private WrapPanel _categoryTiles = null!;
+    private UniformGrid _categoryTiles = null!;
     private string? _openCategory;
 
     private FrameworkElement BuildCategoriesView()
@@ -170,7 +170,7 @@ internal sealed partial class StartMenuWindow
         _categoryTitle.Margin = new Thickness(12, 0, 0, 0);
 
         var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8), Children = { back, _categoryTitle } };
-        _categoryTiles = new WrapPanel();
+        _categoryTiles = new UniformGrid();
         var tilesScroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -300,13 +300,53 @@ internal sealed partial class StartMenuWindow
     {
         _categoryTitle.Text = category;
         _categoryTiles.Children.Clear();
+        // A grid rather than a wrapping row of fixed-width tiles: wrapping left
+        // a gutter the width of most of another tile unused on every row.
+        _categoryTiles.Columns = ColumnsFor(_metrics.CategoryTileWidth);
         foreach (var app in apps)
         {
-            var tile = new StartTile(app, 48) { Width = 136, Height = 118, Margin = new Thickness(0, 0, 2, 4) };
+            var tile = new StartTile(app, _metrics.CategoryIcon)
+            {
+                Height = _metrics.CategoryTileHeight,
+                Margin = new Thickness(0, 0, 2, 4),
+            };
             tile.Clicked += _ => Launch(app);
             tile.RightClicked += t => ShowItemMenu(app, t);
             _categoryTiles.Children.Add(tile);
         }
+    }
+
+    /// <summary>
+    /// How many columns of at least <paramref name="minimum"/> DIPs fit the
+    /// content area. Both lists used to be laid out at a fixed width and left
+    /// most of a column's worth of space empty on a wide menu.
+    /// </summary>
+    /// <summary>Rebuilds the width-driven lists, but only when the count they would use really changed.</summary>
+    private void OnContentWidthChanged()
+    {
+        var rows = ColumnsFor(_metrics.AppRowWidth);
+        var tiles = ColumnsFor(_metrics.CategoryTileWidth);
+        if (rows == _allAppsColumns && tiles == _categoryColumns) return;
+        _allAppsColumns = rows;
+        _categoryColumns = tiles;
+
+        if (_apps.Count > 0) RebuildAllApps();
+        if (_openCategory is { } open)
+        {
+            FillCategory(open, _apps.Values.Where(a => CategoryOf(a) == open)
+                .OrderBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList());
+        }
+    }
+
+    private int _allAppsColumns;
+    private int _categoryColumns;
+
+    private int ColumnsFor(double minimum)
+    {
+        var width = _content.ActualWidth;
+        if (width <= 0) width = DesignWidth - _metrics.ContentMargin.Left - _metrics.ContentMargin.Right;
+        if (_content.MaxWidth is > 0 and < double.PositiveInfinity) width = Math.Min(width, _content.MaxWidth);
+        return Math.Max(1, (int)Math.Floor(width / Math.Max(1, minimum)));
     }
 
     private void CloseCategory()

@@ -78,9 +78,19 @@ public sealed class DesktopItemCatalog
                      : LauncherItemKind.File,
                 Target = path,
                 FileSystemPath = path,
+                // A Steam shortcut's own icon is 32 px; Steam's library art is
+                // not. Only the id is worked out here: composing the picture
+                // belongs on the render thread.
+                SteamAppId = SteamIdFor(path, ext),
             });
         }
     }
+
+    /// <summary>The Steam app id behind a .url shortcut, or null for anything else.</summary>
+    private static string? SteamIdFor(string path, string extension) =>
+        extension.Equals(".url", StringComparison.OrdinalIgnoreCase)
+            ? Icons.SteamArtwork.AppIdOf(Icons.SteamArtwork.UrlOf(path))
+            : null;
 
     /// <summary>
     /// Watches both desktop roots and raises <paramref name="onChanged"/> —
