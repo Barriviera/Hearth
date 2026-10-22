@@ -205,6 +205,11 @@ internal sealed partial class SettingsWindow : Window
                 v => { s.WallpaperDim = v; Apply(false); }),
             ToggleRow("Hide the Windows desktop icons", "They come back whenever Hearth closes.", s.HideShellIcons,
                 v => DesktopHost.Current?.Surface?.SetHideShellIcons(v)),
+            ToggleRow("Wallpaper Engine support",
+                "While Wallpaper Engine is running, Hearth stops painting its own wallpaper and lets Wallpaper Engine show through. " +
+                "Turn it off to always use Hearth's wallpaper (and the dimming above).",
+                s.WallpaperEngineSupport,
+                v => DesktopHost.Current?.Surface?.SetWallpaperEngineSupport(v)),
             ToggleRow("Show every installed app", "Otherwise only desktop items and the apps you add.", s.IncludeInstalledApps,
                 v => _ = DesktopHost.Current?.Surface?.SetIncludeInstalledAppsAsync(v))));
 

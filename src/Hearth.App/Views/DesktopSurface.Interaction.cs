@@ -699,6 +699,23 @@ public partial class DesktopSurface
         }
         menu.Items.Add(style);
 
+        // Only items that have an alternative to the shortcut's own icon
+        // (Steam games, for now) get a choice of where the artwork comes from.
+        if (item.SteamAppId is { Length: > 0 } || item.IconOverridePath is { Length: > 0 })
+        {
+            var source = new MenuItem { Header = "Icon source" };
+            var currentSource = _layout.SourceFor(item.Id);
+            foreach (var (mode, label) in new[]
+            {
+                (IconSourceMode.Auto, "Automatic (Steam artwork)"),
+                (IconSourceMode.Original, "Original icon"),
+            })
+            {
+                source.Items.Add(CheckableMenuItem(label, currentSource == mode, () => SetIconSource(item.Id, mode)));
+            }
+            menu.Items.Add(source);
+        }
+
         if (IsRemovablePin(item))
             menu.Items.Add(MenuItemFor("Remove from home", () => RemoveFromHome(item)));
         else
@@ -723,6 +740,21 @@ public partial class DesktopSurface
     }
 
     // ---- Hiding, deleting, and the Windows menu -------------------------
+
+    private void SetIconSource(string itemId, IconSourceMode mode)
+    {
+        if (mode == IconSourceMode.Auto) _layout.IconSources.Remove(itemId);
+        else _layout.IconSources[itemId] = mode;
+
+        TrySaveLayout();
+
+        // The source is part of the icon cache key, so relayout renders the new
+        // artwork; rebuild the folder panel too if one is open.
+        var openFolder = _openFolder;
+        var folderSurface = _folderSurface;
+        RelayoutTiles();
+        if (openFolder is not null && folderSurface is not null) OpenFolder(openFolder, folderSurface);
+    }
 
     private void SetIconFit(string itemId, IconFit fit)
     {

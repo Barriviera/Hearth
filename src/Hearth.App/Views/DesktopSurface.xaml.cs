@@ -810,7 +810,7 @@ public partial class DesktopSurface : UserControl
 
     private IconTile CreateTile(LauncherItem item, MonitorSurface surface, IconRenderOptions options)
     {
-        options = options with { Fit = _layout.FitFor(item.Id) };
+        options = options with { Fit = _layout.FitFor(item.Id), Source = _layout.SourceFor(item.Id) };
 
         var tile = new IconTile
         {
@@ -855,7 +855,7 @@ public partial class DesktopSurface : UserControl
             if (!_items.TryGetValue(id, out var item)) continue;
             try
             {
-                var icon = await App.Icons.GetAsync(item, options with { Fit = _layout.FitFor(id) }).ConfigureAwait(true);
+                var icon = await App.Icons.GetAsync(item, options with { Fit = _layout.FitFor(id), Source = _layout.SourceFor(id) }).ConfigureAwait(true);
                 if (icon is not null) previews.Add(icon);
             }
             catch (Exception ex)
