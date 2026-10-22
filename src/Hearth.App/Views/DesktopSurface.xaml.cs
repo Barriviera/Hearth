@@ -103,7 +103,17 @@ public partial class DesktopSurface : UserControl
 
         App.Badges.Changed += OnBadgesChanged;
         _ = Task.Run(App.Badges.Refresh);
+
+        Hearth.App.Hosting.DesktopHost.WallpaperEngineModeChanged += OnWallpaperEngineModeChanged;
     }
+
+    /// <summary>Wallpaper Engine started or stopped: draw or stop drawing Hearth's own background.</summary>
+    private void OnWallpaperEngineModeChanged(bool active) =>
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_detached) return;
+            PaintWallpaper();
+        });
 
     /// <summary>
     /// Compensates for WPF's own DPI scaling so that one unit inside RootGrid
@@ -130,6 +140,7 @@ public partial class DesktopSurface : UserControl
         _wallpaperWatcher = null;
         _workAreaTimer?.Stop();
         App.Badges.Changed -= OnBadgesChanged;
+        Hearth.App.Hosting.DesktopHost.WallpaperEngineModeChanged -= OnWallpaperEngineModeChanged;
 
         TrySaveLayout();
     }
@@ -302,6 +313,15 @@ public partial class DesktopSurface : UserControl
     private void PaintWallpaper()
     {
         WallpaperCanvas.Children.Clear();
+
+        // Wallpaper Engine is drawing the background underneath Hearth: paint
+        // nothing (no plates, no dim), so it shows through the transparent window.
+        if (Hearth.App.Hosting.DesktopHost.WallpaperEngineActive)
+        {
+            ScrimRect.Fill = Brushes.Transparent;
+            ScrimRect.Opacity = 0;
+            return;
+        }
 
         var position = _wallpaper.GetPosition();
         var background = _wallpaper.GetBackgroundColor();
