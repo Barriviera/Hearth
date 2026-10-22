@@ -201,6 +201,8 @@ internal sealed partial class SettingsWindow : Window
                 Enum.GetValues<HomeStyle>().Select(v => (v, v == HomeStyle.Ios ? "iOS" : v.ToString())), s.Style,
                 v => { s.Style = v; Apply(false); }),
             ToggleRow("Open with a single click", null, s.LaunchOnSingleClick, v => { s.LaunchOnSingleClick = v; Apply(false); }),
+            ToggleRow("Open folders in the centre", "Otherwise a folder opens over its own icon.", s.CenterOpenFolders,
+                v => { s.CenterOpenFolders = v; s.Save(); }),
             SliderRow("Dim the wallpaper", "Makes labels easier to read.", 0, 0.6, 0.05, s.WallpaperDim, v => $"{v * 100:F0}%",
                 v => { s.WallpaperDim = v; Apply(false); }),
             ToggleRow("Hide the Windows desktop icons", "They come back whenever Hearth closes.", s.HideShellIcons,

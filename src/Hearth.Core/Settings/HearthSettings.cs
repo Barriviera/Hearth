@@ -121,6 +121,12 @@ public sealed class HearthSettings
     public bool LaunchOnSingleClick { get; set; } = true;
 
     /// <summary>
+    /// Open folders in the middle of their display. Off, a folder opens over
+    /// its own tile, so the pointer is already where the items are.
+    /// </summary>
+    public bool CenterOpenFolders { get; set; }
+
+    /// <summary>
     /// Let Wallpaper Engine draw the background while it is running: Hearth
     /// stops painting its own wallpaper and leaves the shell's wallpaper layer
     /// alone. Has no effect when Wallpaper Engine is not running.

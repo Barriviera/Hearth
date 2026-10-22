@@ -113,14 +113,48 @@ public partial class DesktopSurface
             CornerRadius = new CornerRadius(28 * scale),
             Padding = new Thickness(padding),
             Child = stack,
-            RenderTransformOrigin = new Point(0.5, 0.5),
-            RenderTransform = new ScaleTransform(0.92, 0.92),
             Opacity = 0,
         };
 
         var estimatedHeight = contentHeight + padding * 2.6 + 30 * scale;
-        Canvas.SetLeft(_folderPanel, surface.LocalBounds.X + (surface.LocalBounds.Width - _folderPanel.Width) / 2);
-        Canvas.SetTop(_folderPanel, surface.LocalBounds.Y + Math.Max(padding, (surface.LocalBounds.Height - estimatedHeight) / 2));
+        var bounds = surface.LocalBounds;
+        var panelLeft = bounds.X + (bounds.Width - _folderPanel.Width) / 2;
+        var panelTop = bounds.Y + Math.Max(padding, (bounds.Height - estimatedHeight) / 2);
+
+        _tiles.TryGetValue(group.PlacementId, out var folderTile);
+        var hasTile = folderTile is { ActualWidth: > 0 };
+        var from = hasTile ? folderTile!.TranslatePoint(new Point(0, 0), ItemCanvas) : default;
+
+        // Unless the user wants folders centred, the panel opens over its own
+        // tile, kept inside the display, so the pointer is already among the
+        // items instead of having to travel to the middle of the screen.
+        if (hasTile && !App.Settings.CenterOpenFolders)
+        {
+            var tileCentre = from + new Vector(folderTile!.ActualWidth / 2, folderTile.ActualHeight / 2);
+            panelLeft = Math.Clamp(tileCentre.X - _folderPanel.Width / 2,
+                bounds.X + padding, Math.Max(bounds.X + padding, bounds.Right - padding - _folderPanel.Width));
+            panelTop = Math.Clamp(tileCentre.Y - estimatedHeight / 2,
+                bounds.Y + padding, Math.Max(bounds.Y + padding, bounds.Bottom - padding - estimatedHeight));
+        }
+
+        Canvas.SetLeft(_folderPanel, panelLeft);
+        Canvas.SetTop(_folderPanel, panelTop);
+
+        // The panel starts on top of the folder tile, the size of the tile, and
+        // grows out to where it opens, like an app opening from its icon.
+        // Scaling about the top-left corner keeps the arithmetic to one offset;
+        // the panel's height is not known yet, and does not need to be.
+        var zoom = new ScaleTransform(0.92, 0.92);
+        var shift = new TranslateTransform();
+        _folderPanel.RenderTransformOrigin = new Point(0.5, 0.5);
+        if (hasTile)
+        {
+            zoom.ScaleX = zoom.ScaleY = folderTile!.ActualWidth / _folderPanel.Width;
+            shift.X = from.X - panelLeft;
+            shift.Y = from.Y - panelTop;
+            _folderPanel.RenderTransformOrigin = new Point(0, 0);
+        }
+        _folderPanel.RenderTransform = new TransformGroup { Children = { zoom, shift } };
 
         var scrim = new Rectangle
         {
@@ -134,18 +168,20 @@ public partial class DesktopSurface
         FolderLayer.Children.Add(_folderPanel);
         FolderLayer.Visibility = Visibility.Visible;
 
-        // A short grow-and-fade: enough to read as "opening", never enough to
-        // make someone wait. Animating a transform and opacity stays on the
-        // composition fast path.
+        // A short grow-and-move: long enough to see where the panel came from,
+        // never enough to make someone wait. The fade is quicker than the
+        // motion, so the panel is visible for most of its flight. Animating a
+        // transform and opacity stays on the composition fast path.
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        var duration = TimeSpan.FromMilliseconds(160);
-        var grow = new DoubleAnimation(1.0, duration) { EasingFunction = ease };
-        var fade = new DoubleAnimation(1.0, duration) { EasingFunction = ease };
+        var duration = TimeSpan.FromMilliseconds(200);
+        var fade = new DoubleAnimation(1.0, TimeSpan.FromMilliseconds(100)) { EasingFunction = ease };
 
         _folderPanel.BeginAnimation(OpacityProperty, fade);
-        scrim.BeginAnimation(OpacityProperty, fade);
-        ((ScaleTransform)_folderPanel.RenderTransform).BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-        ((ScaleTransform)_folderPanel.RenderTransform).BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+        scrim.BeginAnimation(OpacityProperty, new DoubleAnimation(1.0, duration) { EasingFunction = ease });
+        zoom.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.0, duration) { EasingFunction = ease });
+        zoom.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1.0, duration) { EasingFunction = ease });
+        shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0.0, duration) { EasingFunction = ease });
+        shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0.0, duration) { EasingFunction = ease });
     }
 
     private void CloseFolder()
