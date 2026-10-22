@@ -70,6 +70,7 @@ public partial class DesktopSurface
     private FrameworkElement? _pressedElement;
     private string? _pressedId;
     private Point _pressOrigin;
+    private bool _pressIsDoubleClick;
     private DragSession? _drag;
     private IconTile? _dropTarget;
 
@@ -92,6 +93,8 @@ public partial class DesktopSurface
         // A drag whose mouse-up never arrived must not leave its ghost behind:
         // that orphan is what looked like a duplicated icon.
         if (_drag is not null) CancelDrag();
+
+        _pressIsDoubleClick = e.ClickCount % 2 == 0;
 
         if (_openFolder is not null)
         {
@@ -192,21 +195,19 @@ public partial class DesktopSurface
             return;
         }
 
+        // Double clicks are counted here rather than in OnMouseDoubleClick. That
+        // event fires during the second press, so a folder it opened was closed
+        // again by the same press as a click outside the panel, and it never
+        // reached items inside an open folder at all.
+        var launch = App.Settings.LaunchOnSingleClick || _pressIsDoubleClick;
+
         if (folderPress is not null)
         {
-            if (element is IconTile inFolder && App.Settings.LaunchOnSingleClick) LaunchFromFolder(inFolder);
+            if (element is IconTile inFolder && launch) LaunchFromFolder(inFolder);
             return;
         }
 
-        if (element is IconTile tile && App.Settings.LaunchOnSingleClick) Activate(tile);
-    }
-
-    protected override void OnMouseDoubleClick(MouseButtonEventArgs e)
-    {
-        base.OnMouseDoubleClick(e);
-        if (App.Settings.LaunchOnSingleClick || _openFolder is not null) return;
-
-        if (HitTestElement(e.GetPosition(ItemCanvas)).Element is IconTile tile) Activate(tile);
+        if (element is IconTile tile && launch) Activate(tile);
     }
 
     protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
