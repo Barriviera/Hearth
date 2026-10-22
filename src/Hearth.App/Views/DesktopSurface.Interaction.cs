@@ -142,7 +142,8 @@ public partial class DesktopSurface
         if (_drag is not null)
         {
             MoveGhost(position);
-            UpdateDropTarget(position);
+            if (_drag.FromFolder is not null && _openFolder is not null) UpdateFolderDrag(_drag, position);
+            else UpdateDropTarget(position);
             return;
         }
 
@@ -191,7 +192,9 @@ public partial class DesktopSurface
         if (drag is not null)
         {
             ClearDragVisuals(drag);
-            CompleteDrop(drag, position);
+            // Still open means it was let go over the panel: a reorder.
+            if (drag.FromFolder is { } from && _openFolder is not null) CommitFolderOrder(from);
+            else CompleteDrop(drag, position);
             return;
         }
 
@@ -355,6 +358,7 @@ public partial class DesktopSurface
     {
         if (_drag is null) return;
         ClearDragVisuals(_drag);
+        if (_drag.FromFolder is not null) ResetFolderOrder();
         _drag = null;
     }
 
